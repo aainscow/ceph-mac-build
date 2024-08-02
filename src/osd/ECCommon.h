@@ -220,6 +220,7 @@ struct ECCommon {
     bool overlaps_or_adjacent_to(const ec_align_t &other) const;
     void merge(const ec_align_t &other);
     bool operator<(const ec_align_t &other) const;
+    bool operator>(const ec_align_t &other) const;
     bool operator==(const ec_align_t &other) const;
   };
   friend std::ostream &operator<<(std::ostream &lhs, const ec_align_t &rhs);
@@ -249,6 +250,10 @@ struct ECCommon {
   struct shard_read_t {
     std::list<ec_align_t> extents;
     std::vector<std::pair<int, int>> subchunk;
+    void add_extent(std::list<ec_align_t> &list);
+    void add_extent(ec_align_t &extent);
+    void add_extent(ec_align_t &&extent);
+    bool operator==(const shard_read_t &other) const;
   };
   friend std::ostream &operator<<(std::ostream &lhs, const shard_read_t &rhs);
 
@@ -465,16 +470,14 @@ struct ECCommon {
      *
      */
     void get_min_want_to_read_shards(
-      uint64_t offset,				///< [in]
-      uint64_t length,    			///< [in]
-      std::set<int> *want_to_read               ///< [out]
+      const ec_align_t &to_read,    ///< [in]
+      std::vector<shard_read_t> &want_shard_reads ///< [out]
       );
     static void get_min_want_to_read_shards(
-      const uint64_t offset,
-      const uint64_t length,
+      const ec_align_t &to_read,
       const ECUtil::stripe_info_t& sinfo,
       const std::vector<int>& chunk_mapping,
-      std::set<int> *want_to_read);
+      std::vector<shard_read_t> &want_shard_reads);
 
     int get_remaining_shards(
       const hobject_t &hoid,
@@ -494,19 +497,20 @@ struct ECCommon {
     friend std::ostream &operator<<(std::ostream &lhs, const ReadOp &rhs);
     friend struct FinishReadOp;
 
-    void get_want_to_read_shards(std::set<int> *want_to_read) const;
+    void get_want_to_read_shards(
+      const std::list<ec_align_t> &to_read,
+      std::vector<shard_read_t> &want_shard_reads) const;
 
     /// Returns to_read replicas sufficient to reconstruct want
     int get_min_avail_to_read_shards(
       const hobject_t &hoid,     ///< [in] object
-      const std::set<int> &want,      ///< [in] desired shards
+      std::vector<shard_read_t> &want_shard_read, ///< [in] desired shards
       bool for_recovery,         ///< [in] true if we may use non-acting replicas
       bool do_redundant_reads,   ///< [in] true if we want to issue redundant reads to reduce latency
       read_request_t *read_request ///< [out] shard_reads, corresponding subchunks / other sub reads to read
       ); ///< @return error code, 0 on success
 
     void schedule_recovery_work();
-    void merge_extent_lists(std::list<ec_align_t> &list_a, std::list<ec_align_t> &list_b) const;
   };
 
   /**

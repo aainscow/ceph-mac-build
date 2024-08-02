@@ -26,8 +26,7 @@
 
 using namespace std;
 
-TEST(ECUtil, stripe_info_t)
-{
+TEST(ECUtil, stripe_info_t) {
   const uint64_t swidth = 4096;
   const uint64_t ssize = 4;
 
@@ -53,32 +52,31 @@ TEST(ECUtil, stripe_info_t)
   ASSERT_EQ(s.logical_to_prev_stripe_offset((swidth * 2) - 1),
 	    s.get_stripe_width());
 
-  ASSERT_EQ(s.aligned_logical_offset_to_chunk_offset(2*swidth),
-	    2*s.get_chunk_size());
-  ASSERT_EQ(s.aligned_chunk_offset_to_logical_offset(2*s.get_chunk_size()),
-	    2*s.get_stripe_width());
+  ASSERT_EQ(s.aligned_logical_offset_to_chunk_offset(2 * swidth),
+	    2 * s.get_chunk_size());
+  ASSERT_EQ(s.aligned_chunk_offset_to_logical_offset(2 * s.get_chunk_size()),
+	    2 * s.get_stripe_width());
 
-  ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(swidth+s.get_chunk_size(), 10*swidth),
-	    make_pair(s.get_chunk_size(), 10*s.get_chunk_size()));
+  ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(swidth + s.get_chunk_size(), 10 * swidth),
+	    make_pair(s.get_chunk_size(), 10 * s.get_chunk_size()));
 
-  ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(swidth, 10*swidth),
-	    make_pair(s.get_chunk_size(), 10*s.get_chunk_size()));
+  ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(swidth, 10 * swidth),
+	    make_pair(s.get_chunk_size(), 10 * s.get_chunk_size()));
 
   // round down offset if it's under stripe width
-  ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(s.get_chunk_size(), 10*swidth),
-	    make_pair<uint64_t>(0, 10*s.get_chunk_size()));
+  ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(s.get_chunk_size(), 10 * swidth),
+	    make_pair<uint64_t>(0, 10 * s.get_chunk_size()));
 
   // round up size if above stripe
   ASSERT_EQ(s.chunk_aligned_offset_len_to_chunk(s.get_chunk_size(),
-							  10*swidth + s.get_chunk_size()),
-	    make_pair<uint64_t>(0, 11*s.get_chunk_size()));
+						10 * swidth + s.get_chunk_size()),
+	    make_pair<uint64_t>(0, 11 * s.get_chunk_size()));
 
-  ASSERT_EQ(s.offset_len_to_stripe_bounds(make_pair(swidth-10, (uint64_t)20)),
-            make_pair((uint64_t)0, 2*swidth));
+  ASSERT_EQ(s.offset_len_to_stripe_bounds(make_pair(swidth - 10, (uint64_t) 20)),
+	    make_pair((uint64_t) 0, 2 * swidth));
 }
 
-TEST(ECUtil, offset_length_is_same_stripe)
-{
+TEST(ECUtil, offset_length_is_same_stripe) {
   const uint64_t swidth = 4096;
   const uint64_t schunk = 1024;
   const uint64_t ssize = 4;
@@ -141,7 +139,7 @@ TEST(ECUtil, offset_length_is_same_stripe)
   //   +---+---+---+---+
   //   | 1k| 1k| 1k| 1k|
   //   +---+---+---+---+
-  ASSERT_FALSE(s.offset_length_is_same_stripe(0, 2*swidth));
+  ASSERT_FALSE(s.offset_length_is_same_stripe(0, 2 * swidth));
 
   // multistripe read: 1st stripe without 1st byte + 1st byte of 2nd stripe
   //   +-----+---+---+---+
@@ -248,7 +246,7 @@ class ECListenerStub : public ECListener {
 
 public:
   ECListenerStub()
-  :pg_log(NULL) {}
+    : pg_log(NULL) {}
 
   const OSDMapRef &pgb_get_osdmap() const override {
     return osd_map_ref;
@@ -450,8 +448,7 @@ public:
   }
 };
 
-TEST(ECCommon, get_min_want_to_read_shards)
-{
+TEST(ECCommon, get_min_want_to_read_shards) {
   const uint64_t swidth = 4096;
   const uint64_t ssize = 4;
 
@@ -464,142 +461,177 @@ TEST(ECCommon, get_min_want_to_read_shards)
   ErasureCodeInterfaceRef ec_impl(new ErasureCodeDummyImpl);
   ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s, &listenerStub);
 
+  std::vector<ECCommon::shard_read_t> empty_shard_vector(ssize);
+  ECCommon::shard_read_t empty_shard_read;
+  fill(empty_shard_vector.begin(), empty_shard_vector.end(), empty_shard_read);
+
   // read nothing at the very beginning
   {
-    std::set<int> want_to_read;
-    ECCommon::ReadPipeline::get_min_want_to_read_shards(
-      0, 0, s, chunk_mapping, &want_to_read);
-    ASSERT_TRUE(want_to_read == std::set<int>{});
+    std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
+    ECCommon::ec_align_t to_read(0, 0, 0);
+    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    ASSERT_EQ(want_to_read,  empty_shard_vector);
   }
 
   // read nothing at the middle (0-sized partial read)
   {
-    std::set<int> want_to_read;
-    ECCommon::ReadPipeline::get_min_want_to_read_shards(
-      2048, 0, s, chunk_mapping, &want_to_read);
-    ASSERT_TRUE(want_to_read == std::set<int>{});
+    std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
+    ECCommon::ec_align_t to_read(2048, 0, 0);
+    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    ASSERT_EQ(want_to_read,  empty_shard_vector);
   }
 
   // read not-so-many (< chunk_size) bytes at the middle (partial read)
   {
-    std::set<int> want_to_read;
-    ECCommon::ReadPipeline::get_min_want_to_read_shards(
-      2048, 42, s, chunk_mapping, &want_to_read);
-    ASSERT_TRUE(want_to_read == std::set<int>{2});
+    std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
+    ECCommon::ec_align_t to_read(2048, 42, 1);
+    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    std::vector<ECCommon::shard_read_t> ref(empty_shard_vector);
+    ECCommon::ec_align_t extent(0, 42, 1);
+    ref[2].extents.push_back(extent);
+    ASSERT_EQ(want_to_read, ref);
   }
 
   // read more (> chunk_size) bytes at the middle (partial read)
   {
-    std::set<int> want_to_read;
-    ECCommon::ReadPipeline::get_min_want_to_read_shards(
-      1024, 1024+42, s, chunk_mapping, &want_to_read);
-    // extra () due to a language / macro limitation
-    ASSERT_TRUE(want_to_read == (std::set<int>{1, 2}));
+    std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
+    ECCommon::ec_align_t to_read(1024, 1024 + 42, 1);
+    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    std::vector<ECCommon::shard_read_t> ref(empty_shard_vector);
+    ECCommon::ec_align_t extent_a(0, 1024, 1);
+    ECCommon::ec_align_t extent_b(0, 42, 1);
+    ref[1].extents.push_back(extent_a);
+    ref[2].extents.push_back(extent_b);
+    ASSERT_EQ(want_to_read, ref);
   }
 
   // full stripe except last chunk
   {
-    std::set<int> want_to_read;
-    ECCommon::ReadPipeline::get_min_want_to_read_shards(
-      0, 3*1024, s, chunk_mapping, &want_to_read);
-    // extra () due to a language / macro limitation
-    ASSERT_TRUE(want_to_read == (std::set<int>{0, 1, 2}));
+    std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
+    ECCommon::ec_align_t to_read(0, 3*1024, 1);
+    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    std::vector<ECCommon::shard_read_t> ref(empty_shard_vector);
+    ECCommon::ec_align_t extent_a(0, 1024, 1);
+    ref[0].extents.push_back(extent_a);
+    ref[1].extents.push_back(extent_a);
+    ref[2].extents.push_back(extent_a);
+    ASSERT_EQ(want_to_read, ref);
   }
 
   // full stripe except 1st chunk
   {
-    std::set<int> want_to_read;
-    ECCommon::ReadPipeline::get_min_want_to_read_shards(
-      1024, swidth-1024, s, chunk_mapping, &want_to_read);
-    // extra () due to a language / macro limitation
-    ASSERT_TRUE(want_to_read == (std::set<int>{1, 2, 3}));
+    std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
+    ECCommon::ec_align_t to_read(1024, swidth - 1024, 1);
+    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    std::vector<ECCommon::shard_read_t> ref(empty_shard_vector);
+    ECCommon::ec_align_t extent_a(0, 1024, 1);
+    ref[1].extents.push_back(extent_a);
+    ref[2].extents.push_back(extent_a);
+    ref[3].extents.push_back(extent_a);
+    ASSERT_EQ(want_to_read, ref);
   }
 
   // large, multi-stripe read starting just after 1st chunk
+  // 0XXX
+  // XXXX x41
+  // X000
   {
-    std::set<int> want_to_read;
-    ECCommon::ReadPipeline::get_min_want_to_read_shards(
-      1024, swidth*42, s, chunk_mapping, &want_to_read);
-    // extra () due to a language / macro limitation
-    ASSERT_TRUE(want_to_read == (std::set<int>{0, 1, 2, 3}));
+    std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
+    ECCommon::ec_align_t to_read(1024, swidth * 42, 1);
+    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    std::vector<ECCommon::shard_read_t> ref(empty_shard_vector);
+    ECCommon::ec_align_t extent_a(1024, 1024*42, 1);
+    ECCommon::ec_align_t extent_b(0, 1024*42, 1);
+    ECCommon::ec_align_t extent_c(0, 1024*42, 1);
+
+    ref[0].extents.push_back(extent_a);
+    ref[1].extents.push_back(extent_b);
+    ref[2].extents.push_back(extent_b);
+    ref[3].extents.push_back(extent_c);
+    ASSERT_EQ(want_to_read, ref);
   }
 
   // large read from the beginning
   {
-    std::set<int> want_to_read;
-    ECCommon::ReadPipeline::get_min_want_to_read_shards(
-      0, swidth*42, s, chunk_mapping, &want_to_read);
-    // extra () due to a language / macro limitation
-    ASSERT_TRUE(want_to_read == (std::set<int>{0, 1, 2, 3}));
-  }
+    std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
+    ECCommon::ec_align_t to_read(0, swidth * 42, 1);
+    pipeline.get_min_want_to_read_shards(to_read, want_to_read);
+    std::vector<ECCommon::shard_read_t> ref(empty_shard_vector);
+    ECCommon::ec_align_t extent(0, 1024 * 42, 1);
 
-  {
-    std::set<int> want_to_read;
-    pipeline.get_min_want_to_read_shards(0, swidth*42, &want_to_read);
-    ASSERT_TRUE(want_to_read == (std::set<int>{0, 1, 2, 3}));
+    ref[0].extents.push_back(extent);
+    ref[1].extents.push_back(extent);
+    ref[2].extents.push_back(extent);
+    ref[3].extents.push_back(extent);
+    ASSERT_EQ(want_to_read, ref);
   }
 }
 
-TEST(ECCommon, overlaps_or_adjacent_to)
-{
-  ASSERT_TRUE (ECCommon::ec_align_t(0,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,0,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(0,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,1,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(0,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,2,0)));
-  ASSERT_FALSE(ECCommon::ec_align_t(0,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1,1,0)));
-  ASSERT_FALSE(ECCommon::ec_align_t(0,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1,0,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(1,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1,0,0)));
-  ASSERT_FALSE(ECCommon::ec_align_t(1,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,0,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(1,0,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,1,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(1,1,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,1,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(1,1,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,2,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(1,1,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1,1,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(1,1,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(2,1,0)));
-  ASSERT_FALSE(ECCommon::ec_align_t(1,1,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(3,1,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,1,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0,2,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1,1,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(2,1,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(3,1,0)));
-  ASSERT_FALSE(ECCommon::ec_align_t(1,2,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(4,1,0)));
-  ASSERT_FALSE(ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000-4097,4096,0)));
-  ASSERT_FALSE(ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000-4096,4095,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000-4096,4096,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000-4095,4096,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000+4095,4096,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000+4096,4096,0)));
-  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000+4096,4096,0)));
-  ASSERT_FALSE(ECCommon::ec_align_t(0x100000000,4096,0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0x100000000+4097,4096,0)));
+TEST(ECCommon, overlaps_or_adjacent_to) {
+  ASSERT_TRUE (ECCommon::ec_align_t(0, 0, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0, 0, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0, 0, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0, 1, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0, 0, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0, 2, 0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(0, 0, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1, 1, 0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(0, 0, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1, 0, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1, 0, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1, 0, 0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(1, 0, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0, 0, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1, 0, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0, 1, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1, 1, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0, 1, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1, 1, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0, 2, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1, 1, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1, 1, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1, 1, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(2, 1, 0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(1, 1, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(3, 1, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1, 2, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0, 1, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1, 2, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(0, 2, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1, 2, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(1, 1, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1, 2, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(2, 1, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(1, 2, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(3, 1, 0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(1, 2, 0).overlaps_or_adjacent_to(ECCommon::ec_align_t(4, 1, 0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(0x100000000, 4096, 0).overlaps_or_adjacent_to(
+    ECCommon::ec_align_t(0x100000000 - 4097, 4096, 0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(0x100000000, 4096, 0).overlaps_or_adjacent_to(
+    ECCommon::ec_align_t(0x100000000 - 4096, 4095, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000, 4096, 0).overlaps_or_adjacent_to(
+    ECCommon::ec_align_t(0x100000000 - 4096, 4096, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000, 4096, 0).overlaps_or_adjacent_to(
+    ECCommon::ec_align_t(0x100000000 - 4095, 4096, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000, 4096, 0).overlaps_or_adjacent_to(
+    ECCommon::ec_align_t(0x100000000 + 4095, 4096, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000, 4096, 0).overlaps_or_adjacent_to(
+    ECCommon::ec_align_t(0x100000000 + 4096, 4096, 0)));
+  ASSERT_TRUE (ECCommon::ec_align_t(0x100000000, 4096, 0).overlaps_or_adjacent_to(
+    ECCommon::ec_align_t(0x100000000 + 4096, 4096, 0)));
+  ASSERT_FALSE(ECCommon::ec_align_t(0x100000000, 4096, 0).overlaps_or_adjacent_to(
+    ECCommon::ec_align_t(0x100000000 + 4097, 4096, 0)));
 }
 
-TEST(ECCommon, merge)
-{
-  ECCommon::ec_align_t extent(100,1,0);
+TEST(ECCommon, merge) {
+  ECCommon::ec_align_t extent(100, 1, 0);
   extent.merge(extent);
-  ASSERT_EQ(ECCommon::ec_align_t(100,1,0), extent);
+  ASSERT_EQ(ECCommon::ec_align_t(100, 1, 0), extent);
   extent.merge(ECCommon::ec_align_t(99, 1, 0));
-  ASSERT_EQ(ECCommon::ec_align_t(99,2,0), extent);
+  ASSERT_EQ(ECCommon::ec_align_t(99, 2, 0), extent);
   extent.merge(ECCommon::ec_align_t(99, 1, 0));
-  ASSERT_EQ(ECCommon::ec_align_t(99,2,0), extent);
+  ASSERT_EQ(ECCommon::ec_align_t(99, 2, 0), extent);
   extent.merge(ECCommon::ec_align_t(98, 3, 0));
-  ASSERT_EQ(ECCommon::ec_align_t(98,3,0), extent);
+  ASSERT_EQ(ECCommon::ec_align_t(98, 3, 0), extent);
   extent.merge(ECCommon::ec_align_t(97, 1, 0));
-  ASSERT_EQ(ECCommon::ec_align_t(97,4,0), extent);
+  ASSERT_EQ(ECCommon::ec_align_t(97, 4, 0), extent);
   extent.merge(ECCommon::ec_align_t(95, 1, 0));
-  ASSERT_EQ(ECCommon::ec_align_t(95,6,0), extent);
+  ASSERT_EQ(ECCommon::ec_align_t(95, 6, 0), extent);
   extent.merge(ECCommon::ec_align_t(94, 8, 0));
-  ASSERT_EQ(ECCommon::ec_align_t(94,8,0), extent);
+  ASSERT_EQ(ECCommon::ec_align_t(94, 8, 0), extent);
   extent.merge(ECCommon::ec_align_t(95, 2, 0));
-  ASSERT_EQ(ECCommon::ec_align_t(94,8,0), extent);
+  ASSERT_EQ(ECCommon::ec_align_t(94, 8, 0), extent);
   extent.merge(ECCommon::ec_align_t(101, 4, 0));
-  ASSERT_EQ(ECCommon::ec_align_t(94,11,0), extent);
+  ASSERT_EQ(ECCommon::ec_align_t(94, 11, 0), extent);
 
   /* Check we can cope with transitions to 64bit. */
   extent.merge(ECCommon::ec_align_t(100, 0xffffffff, 0));
-  ASSERT_EQ(ECCommon::ec_align_t(94,0x100000005,0), extent);
+  ASSERT_EQ(ECCommon::ec_align_t(94, 0x100000005, 0), extent);
 }
 
-TEST(ECCommon, merge_extent_lists)
-{
+TEST(ECCommon, add_extent) {
   const uint64_t swidth = 4096;
   const uint64_t ssize = 4;
 
@@ -609,69 +641,66 @@ TEST(ECCommon, merge_extent_lists)
   const std::vector<int> chunk_mapping = {}; // no remapping
   ErasureCodeInterfaceRef ec_impl(new ErasureCodeDummyImpl);
   ECCommon::ReadPipeline pipeline(g_ceph_context, ec_impl, s, &listenerStub);
-  list<ECCommon::ec_align_t> empty;
+  ECCommon::shard_read_t empty;
 
   {
-    list<ECCommon::ec_align_t> l1;
-    l1.push_back(ECCommon::ec_align_t(0, 0x400, 0));
-    list<ECCommon::ec_align_t> l2;
-    l2.push_back(ECCommon::ec_align_t(0,0x400, 0));
-    list<ECCommon::ec_align_t> ref;
-    ref.push_back(ECCommon::ec_align_t(0,0x400, 0));
+    ECCommon::shard_read_t shard_a;
+    shard_a.add_extent(ECCommon::ec_align_t(0, 0x400, 0));
+    ECCommon::shard_read_t shard_b;
+    shard_b.add_extent(ECCommon::ec_align_t(0, 0x400, 0));
+    ECCommon::shard_read_t ref;
+    ref.add_extent(ECCommon::ec_align_t(0, 0x400, 0));
 
-    pipeline.merge_extent_lists(l1, l2);
-    ASSERT_EQ(ref, l1);
-    ASSERT_EQ(empty, l2);
+    shard_a.add_extent(shard_b.extents);
+    ASSERT_EQ(ref, shard_a);
+    ASSERT_EQ(empty, shard_b);
 
-    l2.push_back(ECCommon::ec_align_t(0x200,0x400, 0));
-    ref.begin()->size += 512;
+    shard_b.add_extent(ECCommon::ec_align_t(0x200, 0x400, 0));
+    ref.extents.front().size += 512;
 
-    pipeline.merge_extent_lists(l1, l2);
-    ASSERT_EQ(ref, l1);
-    ASSERT_EQ(empty, l2);
+    shard_a.add_extent(shard_b.extents);
+    ASSERT_EQ(ref, shard_a);
+    ASSERT_EQ(empty, shard_b);
 
-    l2.push_back(ECCommon::ec_align_t(0x600,0x200, 0));
-    ref.begin()->size += 0x200;
+    shard_b.add_extent(ECCommon::ec_align_t(0x600, 0x200, 0));
+    ref.extents.front().size += 0x200;
 
-    pipeline.merge_extent_lists(l1, l2);
-    ASSERT_EQ(ref, l1);
-    ASSERT_EQ(empty, l2);
+    shard_a.add_extent(shard_b.extents);
+    ASSERT_EQ(ref, shard_a);
+    ASSERT_EQ(empty, shard_b);
 
-    l2.push_back(ECCommon::ec_align_t(0xc00,0x200,0));
-    ref.push_back(ECCommon::ec_align_t(0xc00,0x200, 0));
+    shard_b.add_extent(ECCommon::ec_align_t(0xc00, 0x200, 0));
+    ref.add_extent(ECCommon::ec_align_t(0xc00, 0x200, 0));
 
-    pipeline.merge_extent_lists(l1, l2);
-    ASSERT_EQ(ref, l1);
-    ASSERT_EQ(empty, l2);
+    shard_a.add_extent(shard_b.extents);
+    ASSERT_EQ(ref, shard_a);
+    ASSERT_EQ(empty, shard_b);
   }
 
-  /* We should be able to cope with lists in reverse too */
+  /* We should be able to cope with addign extents backwards too */
   {
-    list<ECCommon::ec_align_t> l1;
-    list<ECCommon::ec_align_t> l2;
+    ECCommon::shard_read_t shard_a;
+    ECCommon::shard_read_t shard_b;
 
     /* The first 4 blocks should get merged */
-    l1.push_back(ECCommon::ec_align_t(0, 0x400, 0));
-    l1.push_back(ECCommon::ec_align_t(0x400, 0x400, 0));
-    l2.push_back(ECCommon::ec_align_t(0x400, 0x800, 0));
-    l1.push_back(ECCommon::ec_align_t(0xc00, 0x400, 0));
+    shard_a.add_extent(ECCommon::ec_align_t(0xc00, 0x400, 0));
+    shard_b.add_extent(ECCommon::ec_align_t(0x400, 0x800, 0));
+    shard_a.add_extent(ECCommon::ec_align_t(0x400, 0x400, 0));
+    shard_a.add_extent(ECCommon::ec_align_t(0, 0x400, 0));
 
     /* These should get left alone, but put in a list */
-    l1.push_back(ECCommon::ec_align_t(0x1000, 0x400, 0));
-    l2.push_back(ECCommon::ec_align_t(0x2000, 0x400, 0));
-    l1.push_back(ECCommon::ec_align_t(0x3000, 0x400, 0));
+    shard_a.add_extent(ECCommon::ec_align_t(0x3000, 0x400, 0));
+    shard_b.add_extent(ECCommon::ec_align_t(0x2000, 0x400, 0));
+    shard_a.add_extent(ECCommon::ec_align_t(0x1000, 0x400, 0));
 
-    l1.reverse();
-    l2.reverse();
+    ECCommon::shard_read_t ref;
+    ref.add_extent(ECCommon::ec_align_t(0, 0x1000, 0));
+    ref.add_extent(ECCommon::ec_align_t(0x1000, 0x400, 0));
+    ref.add_extent(ECCommon::ec_align_t(0x2000, 0x400, 0));
+    ref.add_extent(ECCommon::ec_align_t(0x3000, 0x400, 0));
 
-    list<ECCommon::ec_align_t> ref;
-    ref.push_back(ECCommon::ec_align_t(0, 0x1000, 0));
-    ref.push_back(ECCommon::ec_align_t(0x1000, 0x400, 0));
-    ref.push_back(ECCommon::ec_align_t(0x2000, 0x400, 0));
-    ref.push_back(ECCommon::ec_align_t(0x3000, 0x400, 0));
-
-    pipeline.merge_extent_lists(l1, l2);
-    ASSERT_EQ(ref, l1);
-    ASSERT_EQ(empty, l2);
+    shard_a.add_extent(shard_b.extents);
+    ASSERT_EQ(ref, shard_a);
+    ASSERT_EQ(empty, shard_b);
   }
 }

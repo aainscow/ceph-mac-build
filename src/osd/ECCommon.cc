@@ -287,11 +287,10 @@ void ECCommon::ReadPipeline::get_all_avail_shards(
 
 int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
   const hobject_t &hoid,
-  const set<int> &want,
+  vector<shard_read_t> &want_shard_reads,
   bool for_recovery,
   bool do_redundant_reads,
-  read_request_t *read_request)
-{
+  read_request_t *read_request) {
   // Make sure we don't do redundant reads for recovery
   ceph_assert(!for_recovery || !do_redundant_reads);
 
@@ -302,67 +301,124 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
   get_all_avail_shards(hoid, error_shards, have, shards, for_recovery);
 
   map<int, vector<pair<int, int>>> need;
+  set<int> want;
+
+  for (int i=0; auto &&want_shard_read : want_shard_reads) {
+    if (!want_shard_read.extents.empty()) {
+      want.insert(i);
+    }
+    i++;
+  }
+
   int r = ec_impl->minimum_to_decode(want, have, &need);
   if (r < 0)
     return r;
 
   if (do_redundant_reads) {
-      vector<pair<int, int>> subchunks_list;
-      subchunks_list.push_back(make_pair(0, ec_impl->get_sub_chunk_count()));
-      for (auto &&i: have) {
-        need[i] = subchunks_list;
-      }
-  } 
+    vector<pair<int, int>> subchunks_list;
+    subchunks_list.push_back(make_pair(0, ec_impl->get_sub_chunk_count()));
+    for (auto &&i: have) {
+      need[i] = subchunks_list;
+    }
+  }
 
   if (!read_request)
     return 0;
 
-  for (auto &&[shard_index, subchunk] : need) {
-    shard_id_t shard_id(shard_index);
+  shard_read_t recovery;
+
+  /* First deal with missing shards */
+  for (int i=0; auto &&want_shard_read : want_shard_reads) {
+    shard_id_t shard_id(i);
     ceph_assert(shards.count(shard_id));
     pg_shard_t pg_shard = shards[shard_id];
-    auto &shard_read = read_request->shard_reads[pg_shard];
-    shard_read.subchunk = subchunk;
 
-    for (auto &&read : read_request->to_read) {
-      shard_read.extents.push_back(ec_align_t(
-	sinfo.chunk_aligned_offset_len_to_chunk(read.offset, read.size), read.flags));
+    if (want_shard_read.extents.empty())
+      continue;
+
+    /* If these shard reads have errored, then we need to add the extents to
+     * the recovery list, which will later be added to every other shard to
+     * be read.
+     */
+    if (error_shards.contains(pg_shard)) {
+      recovery.add_extent(want_shard_read.extents);
     }
+    i++;
+  }
+
+  for (auto &&[shard_index, subchunk] : need) {
+    pg_shard_t pg_shard = shards[shard_id_t(shard_index)];
+    auto shard_read = want_shard_reads[shard_index];
+    shard_read.subchunk = subchunk;
+    if (!recovery.extents.empty()) {
+      list<ec_align_t> recovery_copy(recovery.extents);
+      shard_read.add_extent(recovery_copy);
+    }
+
+    read_request->shard_reads[pg_shard] = shard_read;
   }
   return 0;
 }
 
-// a static for the sake of unittesting
 void ECCommon::ReadPipeline::get_min_want_to_read_shards(
-  const uint64_t offset,
-  const uint64_t length,
-  const ECUtil::stripe_info_t& sinfo,
-  const vector<int>& chunk_mapping,
-  set<int> *want_to_read)
-{
-  const auto [left_chunk_index, right_chunk_index] =
-    sinfo.offset_length_to_data_chunk_indices(offset, length);
-  for(uint64_t i = left_chunk_index; i < right_chunk_index; i++) {
-    auto raw_chunk = i % sinfo.get_data_chunk_count();
-    auto chunk = chunk_mapping.size() > raw_chunk ?
-      chunk_mapping[raw_chunk] : static_cast<int>(raw_chunk);
-    if (auto [_, inserted] = want_to_read->insert(chunk); !inserted) {
-      // aready processed all chunks
-      ceph_assert(want_to_read->size() == sinfo.get_data_chunk_count());
-      break;
+    const ec_align_t &to_read,
+    const ECUtil::stripe_info_t& sinfo,
+    const vector<int>& chunk_mapping,
+    vector<shard_read_t> &want_shard_reads) {
+  uint64_t stripe_width = sinfo.get_stripe_width();
+  uint64_t chunk_size = sinfo.get_chunk_size();
+  uint64_t data_chunk_count = sinfo.get_data_chunk_count();
+  // Aim is to minimise non-^2 divs (chunk_size is assumed to be a power of 2).
+  // These should be the only divs.
+  auto begin_div = to_read.offset/stripe_width;
+  auto begin_rem = to_read.offset - begin_div*stripe_width;
+  auto end_div = (to_read.offset+to_read.size+stripe_width-1)/stripe_width - 1;
+  auto start = begin_div*chunk_size;
+  auto end = end_div*chunk_size;
+
+  auto start_shard = begin_rem / chunk_size;
+  auto shard_count = (to_read.size + chunk_size - 1) / chunk_size;
+  if (shard_count > data_chunk_count) {
+    shard_count = data_chunk_count;
+  }
+  auto end_shard = start_shard + shard_count;
+  auto last_shard = end_shard-1;
+  if (last_shard>=data_chunk_count) {
+    last_shard -= data_chunk_count;
+  }
+
+  for (int i = start_shard; i < end_shard; i++) {
+    auto raw_shard = i>=data_chunk_count?i-data_chunk_count:i;
+    auto shard = chunk_mapping.size() > raw_shard ?
+		 chunk_mapping[raw_shard] : static_cast<int>(raw_shard);
+
+    uint64_t start_adj = 0;
+    uint64_t end_adj = 0;
+
+    if (raw_shard<start_shard) {
+      start_adj = chunk_size;
+    } else if (raw_shard==start_shard) {
+      start_adj = to_read.offset%chunk_size;
     }
+    if (raw_shard<(last_shard)) {
+      end_adj = chunk_size;
+    } else if (raw_shard==last_shard) {
+      end_adj = (to_read.offset + to_read.size -1) % chunk_size + 1;
+    }
+
+    want_shard_reads[shard].extents.push_back(
+      ec_align_t(start+start_adj, end+end_adj-start-start_adj, to_read.flags));
   }
 }
 
 void ECCommon::ReadPipeline::get_min_want_to_read_shards(
-  const uint64_t offset,
-  const uint64_t length,
-  set<int> *want_to_read)
+  const ec_align_t &to_read,
+  vector<shard_read_t> &want_shard_reads)
 {
   get_min_want_to_read_shards(
-    offset, length, sinfo, ec_impl->get_chunk_mapping(), want_to_read);
-  dout(20) << __func__ << ": offset " << offset << " length " << length
-	   << " want_to_read " << *want_to_read << dendl;
+    to_read, sinfo, ec_impl->get_chunk_mapping(), want_shard_reads);
+  dout(20) << __func__ << ": to_read " << to_read
+	   << " read_request " << want_shard_reads << dendl;
 }
 
 int ECCommon::ReadPipeline::get_remaining_shards(
@@ -504,12 +560,18 @@ void ECCommon::ReadPipeline::do_read_op(ReadOp &op)
 }
 
 void ECCommon::ReadPipeline::get_want_to_read_shards(
-  std::set<int> *want_to_read) const
+  const list<ec_align_t> &to_read,
+  std::vector<shard_read_t> &want_shard_reads) const
 {
   const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
+
   for (int i = 0; i < (int)ec_impl->get_data_chunk_count(); ++i) {
     int chunk = (int)chunk_mapping.size() > i ? chunk_mapping[i] : i;
-    want_to_read->insert(chunk);
+
+    for (auto &&read : to_read) {
+      ec_align_t extent(sinfo.chunk_aligned_offset_len_to_chunk(read.offset, read.size), read.flags);
+      want_shard_reads[chunk].add_extent(extent);
+    }
   }
 }
 
@@ -610,25 +672,27 @@ void ECCommon::ReadPipeline::objects_read_and_reconstruct(
   }
 
   map<hobject_t, set<int>> obj_want_to_read;
-    
+
   map<hobject_t, read_request_t> for_read_op;
-  for (auto &&to_read: reads) {
-    set<int> want_to_read;
+  for (auto &&[hoid, to_read]: reads) {
+    vector<shard_read_t> want_shard_reads(sinfo.get_stripe_width());
+    shard_read_t empty_shard_read;
+
+    /* Populate vector with empty reads */
+    fill(want_shard_reads.begin(), want_shard_reads.end(), empty_shard_read);
+
     if (cct->_conf->osd_ec_partial_reads) {
-      for (const auto& single_region : to_read.second) {
-        get_min_want_to_read_shards(single_region.offset,
-				    single_region.size,
-				    &want_to_read);
+      for (const auto& single_region : to_read) {
+        get_min_want_to_read_shards(single_region, want_shard_reads);
       }
     } else {
-      get_want_to_read_shards(&want_to_read);
+      get_want_to_read_shards(to_read, want_shard_reads);
     }
 
-    read_request_t read_request(to_read.second, false);
-    map<pg_shard_t, shard_read_t> shard_reads;
+    read_request_t read_request(to_read, false);
     int r = get_min_avail_to_read_shards(
-      to_read.first,
-      want_to_read,
+      hoid,
+      want_shard_reads,
       false,
       fast_read,
       &read_request);
@@ -640,8 +704,7 @@ void ECCommon::ReadPipeline::objects_read_and_reconstruct(
              << " subchunk_size=" << subchunk_size
              << " chunk_size=" << sinfo.get_chunk_size() << dendl;
 
-    for_read_op.insert(make_pair(to_read.first, read_request));
-    obj_want_to_read.insert(make_pair(to_read.first, want_to_read));
+    for_read_op.insert(make_pair(hoid, read_request));
   }
 
   start_read_op(
@@ -723,15 +786,19 @@ bool ECCommon::ec_align_t::operator<(const ec_align_t &other) const {
   return offset < other.offset;
 }
 
+bool ECCommon::ec_align_t::operator>(const ec_align_t &other) const {
+  return offset > other.offset;
+}
+
 bool ECCommon::ec_align_t::operator==(const ec_align_t &other) const {
   return offset == other.offset && size == other.size && flags == other.flags;
 }
 
-void ECCommon::ReadPipeline::merge_extent_lists(list<ec_align_t> &list_a, list<ec_align_t> &list_b) const {
+void ECCommon::shard_read_t::add_extent(std::list<ec_align_t> &list) {
 
-  list<ec_align_t> tmp_list;
-  tmp_list.splice(tmp_list.end(), list_a);
-  tmp_list.splice(tmp_list.end(), list_b);
+  std::list<ec_align_t> tmp_list;
+  tmp_list.splice(tmp_list.end(), extents);
+  tmp_list.splice(tmp_list.end(), list);
   tmp_list.sort();
 
   auto keep = tmp_list.begin();
@@ -742,14 +809,51 @@ void ECCommon::ReadPipeline::merge_extent_lists(list<ec_align_t> &list_a, list<e
       keep->merge(*merge);
       ++merge;
     } else {
-      list_a.push_back(*keep);
+      extents.push_back(*keep);
       keep=merge;
       merge=next(keep);
     }
   }
 
   if (keep != tmp_list.end())
-    list_a.push_back(*keep);
+    extents.push_back(*keep);
+}
+
+
+void ECCommon::shard_read_t::add_extent(ec_align_t &&extent) {
+
+  /* Optimal case 1 - extent list is empty */
+  if (extents.empty()) {
+    extents.push_back(extent);
+    return;
+  }
+
+  ec_align_t &back = extents.back();
+
+  /* Optimal (and common) case 2: added extent overlaps with current back */
+  if (back.overlaps_or_adjacent_to(extent)) {
+    back.merge(extent);
+    return;
+  }
+
+  /* If extent being added is alter, then we can just push to the back */
+  if (extent > back) {
+    extents.push_back(extent);
+  }
+
+  /* Most of the optimal cases should have been handled, but for completeness,
+   * we cope with the case where an extent is being inserted. */
+  list<ec_align_t> tmp_list;
+  tmp_list.push_back(extent);
+  add_extent(tmp_list);
+}
+
+void ECCommon::shard_read_t::add_extent(ec_align_t &extent) {
+  add_extent(std::move(extent));
+}
+
+bool ECCommon::shard_read_t::operator==(const shard_read_t &other) const {
+  return extents==other.extents && subchunk==other.subchunk;
 }
 
 void ECCommon::RMWPipeline::start_rmw(OpRef op)

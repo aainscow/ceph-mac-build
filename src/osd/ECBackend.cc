@@ -582,8 +582,10 @@ void ECBackend::RecoveryBackend::continue_recovery_op(
       list<ECCommon::ec_align_t> to_read;
       to_read.emplace_back(ECCommon::ec_align_t{op.recovery_progress.data_recovered_to, amount, 0});
       ECCommon::read_request_t read_request(to_read, op.recovery_progress.first && !op.obc);
-      int r = read_pipeline.get_min_avail_to_read_shards(
-	op.hoid, want, true, false, &read_request);
+      // FIXME
+      int r = 0;
+//      int r = read_pipeline.get_min_avail_to_read_shards(
+//	op.hoid, want, true, false, &read_request);
       if (r != 0) {
 	// we must have lost a recovery source
 	ceph_assert(!op.recovery_progress.first);
