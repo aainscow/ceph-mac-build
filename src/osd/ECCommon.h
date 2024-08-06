@@ -217,10 +217,6 @@ struct ECCommon {
       : offset(p.first), size(p.second), flags(flags) {}
     ec_align_t(uint64_t offset, uint64_t size, uint32_t flags)
       : offset(offset), size(size), flags(flags) {}
-    bool overlaps_or_adjacent_to(const ec_align_t &other) const;
-    void merge(const ec_align_t &other);
-    bool operator<(const ec_align_t &other) const;
-    bool operator>(const ec_align_t &other) const;
     bool operator==(const ec_align_t &other) const;
   };
   friend std::ostream &operator<<(std::ostream &lhs, const ec_align_t &rhs);
@@ -248,11 +244,8 @@ struct ECCommon {
     GenContextURef<ec_extents_t &&> &&func) = 0;
 
   struct shard_read_t {
-    std::list<ec_align_t> extents;
+    extent_set extents;
     std::vector<std::pair<int, int>> subchunk;
-    void add_extent(std::list<ec_align_t> &list);
-    void add_extent(ec_align_t &extent);
-    void add_extent(ec_align_t &&extent);
     bool operator==(const shard_read_t &other) const;
   };
   friend std::ostream &operator<<(std::ostream &lhs, const shard_read_t &rhs);
@@ -265,6 +258,7 @@ struct ECCommon {
       const std::list<ec_align_t> &to_read,
       bool want_attrs)
       : to_read(to_read), want_attrs(want_attrs) {}
+    bool operator==(const read_request_t &other) const;
   };
   friend std::ostream &operator<<(std::ostream &lhs, const read_request_t &rhs);
   struct ReadOp;
