@@ -203,6 +203,13 @@ public:
     }
     return ret;
   }
+  void align(int to) {
+    interval_set<K> tmp;
+    for (auto &&i: *this) {
+      tmp.insert((i.get_off()/to * to), (i.get_len() + to - 1)/to * to);
+    }
+    insert(tmp);
+  }
   class const_iterator {
     cmapiter it;
     const_iterator(cmapiter &&it) : it(std::move(it)) {}
