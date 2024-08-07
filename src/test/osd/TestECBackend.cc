@@ -183,7 +183,7 @@ public:
   }
 
   int get_sub_chunk_count() override {
-    return 0;
+    return 1;
   }
 
   unsigned int get_chunk_size(unsigned int stripe_width) const override {
@@ -669,14 +669,16 @@ TEST(ECCommon, get_min_want_to_read_shards) {
 }
 
 TEST(ECCommon, get_min_avail_to_read_shards) {
-  const uint64_t swidth = 4096;
+  const uint64_t page_size = CEPH_PAGE_SIZE;
+  const uint64_t swidth = 64*page_size;
   const uint64_t ssize = 4;
   const int nshards = 6;
+  const uint64_t block_size = 512;
 
   ECUtil::stripe_info_t s(ssize, swidth);
   ECListenerStub listenerStub;
   ASSERT_EQ(s.get_stripe_width(), swidth);
-  ASSERT_EQ(s.get_chunk_size(), 1024);
+  ASSERT_EQ(s.get_chunk_size(), swidth/ssize);
 
   const std::vector<int> chunk_mapping = {}; // no remapping
   ErasureCodeDummyImpl *ecode = new ErasureCodeDummyImpl();
@@ -712,7 +714,7 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
     ECCommon::read_request_t read_request(to_read_list, false);
 
     for (unsigned int i=0; i<ssize; i++) {
-      want_to_read[i].extents.insert(i*20, 10);
+      want_to_read[i].extents.insert(i*2*page_size, page_size);
     }
 
     pipeline.get_min_avail_to_read_shards(hoid, want_to_read, false, false, &read_request);
@@ -726,6 +728,49 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
     ASSERT_EQ(read_request,  ref);
   }
 
+  /* Read to every data shard. */
+  {
+    std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
+    std::list<ECCommon::ec_align_t> to_read_list;
+    hobject_t hoid;
+    ECCommon::read_request_t read_request(to_read_list, false);
+
+    for (unsigned int i=0; i<ssize; i++) {
+      want_to_read[i].extents.insert(i*2*page_size, page_size);
+    }
+
+    pipeline.get_min_avail_to_read_shards(hoid, want_to_read, false, false, &read_request);
+
+    ECCommon::read_request_t ref(to_read_list, false);
+    for (unsigned int i=0; i<ssize; i++) {
+      want_to_read[i].subchunk = ecode->default_sub_chunk;
+      ref.shard_reads[pg_shard_t(i, shard_id_t(i))] = want_to_read[i];
+    }
+
+    ASSERT_EQ(read_request,  ref);
+  }
+
+
+  /* Read to every data shard - small read */
+  {
+    std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
+    std::list<ECCommon::ec_align_t> to_read_list;
+    hobject_t hoid;
+    ECCommon::read_request_t read_request(to_read_list, false);
+
+    ECCommon::read_request_t ref(to_read_list, false);
+    for (unsigned int i=0; i<ssize; i++) {
+      want_to_read[i].extents.insert(i*2*page_size + i + 1, i+1);
+      ECCommon::shard_read_t &ref_shard_read = ref.shard_reads[pg_shard_t(i, shard_id_t(i))];
+      ref_shard_read.subchunk = ecode->default_sub_chunk;
+      ref_shard_read.extents.insert(i*2*page_size, page_size);
+    }
+
+    pipeline.get_min_avail_to_read_shards(hoid, want_to_read, false, false, &read_request);
+
+    ASSERT_EQ(read_request,  ref);
+  }
+
   /* Read to every data shard, missing shard. */
   {
     std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
@@ -734,10 +779,10 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
     ECCommon::read_request_t read_request(to_read_list, false);
 
     for (unsigned int i=0; i<ssize; i++) {
-      want_to_read[i].extents.insert(i*20, 10);
+      want_to_read[i].extents.insert(i*2*page_size, page_size);
     }
 
-    int missing_shard = 1;
+    unsigned int missing_shard = 1;
     int parity_shard = ssize;
     listenerStub.acting_shards.erase(pg_shard_t(missing_shard, shard_id_t(missing_shard)));
 
@@ -762,6 +807,44 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
     listenerStub.acting_shards.insert(pg_shard_t(1, shard_id_t(1)));
   }
 
+
+  /* Read to every data shard, missing shard, missing shard is adjacent. */
+  {
+    std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
+    std::list<ECCommon::ec_align_t> to_read_list;
+    hobject_t hoid;
+    ECCommon::read_request_t read_request(to_read_list, false);
+    unsigned int missing_shard = 1;
+
+    ECCommon::read_request_t ref(to_read_list, false);
+    want_to_read[0].extents.insert(0, page_size);
+    want_to_read[1].extents.insert(page_size, page_size);
+    want_to_read[2].extents.insert(2*page_size, page_size);
+    want_to_read[3].extents.insert(3*page_size, page_size);
+
+    // Populating reference manually to check that adjacent shards get correctly combined.
+    ref.shard_reads[pg_shard_t(0, shard_id_t(0))].extents.insert(0, page_size*2);
+    ref.shard_reads[pg_shard_t(2, shard_id_t(2))].extents.insert(page_size, page_size*2);
+    ref.shard_reads[pg_shard_t(3, shard_id_t(3))].extents.insert(page_size, page_size);
+    ref.shard_reads[pg_shard_t(3, shard_id_t(3))].extents.insert(3*page_size, page_size);
+    ref.shard_reads[pg_shard_t(4, shard_id_t(4))].extents.insert(page_size, page_size);
+
+    for (unsigned int i=0; i<ssize+1; i++) {
+      if (i==missing_shard) {
+	continue;
+      }
+      ref.shard_reads[pg_shard_t(i, shard_id_t(i))].subchunk = ecode->default_sub_chunk;
+    }
+
+    listenerStub.acting_shards.erase(pg_shard_t(missing_shard, shard_id_t(missing_shard)));
+
+    pipeline.get_min_avail_to_read_shards(hoid, want_to_read, false, false, &read_request);
+
+    ASSERT_EQ(read_request,  ref);
+
+    listenerStub.acting_shards.insert(pg_shard_t(1, shard_id_t(1)));
+  }
+
   /* Read to every data shard, but with "fast" (redundant) reads */
   {
     std::vector<ECCommon::shard_read_t> want_to_read(empty_shard_vector);
@@ -771,14 +854,14 @@ TEST(ECCommon, get_min_avail_to_read_shards) {
 
     extent_set extents_to_read;
     for (unsigned int i=0; i<ssize; i++) {
-      want_to_read[i].extents.insert(i*20, 10);
-      extents_to_read.insert(i*20, 10);
+      want_to_read[i].extents.insert(i*2*page_size, page_size);
+      extents_to_read.insert(i*2*page_size, page_size);
     }
 
     pipeline.get_min_avail_to_read_shards(hoid, want_to_read, false, true, &read_request);
 
     ECCommon::read_request_t ref(to_read_list, false);
-    for (unsigned int i=0; i<ssize; i++) {
+    for (unsigned int i=0; i<ssize+2; i++) {
       ECCommon::shard_read_t shard_read;
       shard_read.subchunk = ecode->default_sub_chunk;
       shard_read.extents = extents_to_read;

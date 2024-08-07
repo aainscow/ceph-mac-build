@@ -342,6 +342,8 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
     }
   }
 
+  uint64_t align = cct->_conf->osd_ec_optimal_partial_reads?sinfo.get_chunk_size():CEPH_PAGE_SIZE;
+
   for (auto &&[shard_index, subchunk] : need) {
     if (!have.contains(shard_index)) {
       continue;
@@ -355,6 +357,7 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
       shard_read.extents.union_of(want_shard_reads[shard_index].extents);
     }
 
+    shard_read.extents.align(align);
     read_request->shard_reads[pg_shard] = shard_read;
   }
   return 0;
@@ -677,10 +680,9 @@ void ECCommon::ReadPipeline::objects_read_and_reconstruct(
   map<hobject_t, read_request_t> for_read_op;
   for (auto &&[hoid, to_read]: reads) {
     vector<shard_read_t> want_shard_reads(sinfo.get_stripe_width());
-    shard_read_t empty_shard_read;
 
     /* Populate vector with empty reads */
-    fill(want_shard_reads.begin(), want_shard_reads.end(), empty_shard_read);
+    fill(want_shard_reads.begin(), want_shard_reads.end(), shard_read_t());
 
     if (cct->_conf->osd_ec_partial_reads) {
       for (const auto& single_region : to_read) {
