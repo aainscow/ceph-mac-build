@@ -764,6 +764,18 @@ class interval_set {
     return std::move(m);
   }
 
+  /*
+  * Round down interval starts and round up interval ends alignment the specified @alignment
+  */
+  void align(T alignment) {
+    interval_set<T> tmp;
+    for (const auto& [start, len] : m) {
+      tmp.insert((start / alignment) * alignment,
+		 ((start + len + alignment - 1) / alignment) * alignment - start);
+    }
+    insert(tmp);
+  }
+
 private:
   // data
   uint64_t _size = 0;
