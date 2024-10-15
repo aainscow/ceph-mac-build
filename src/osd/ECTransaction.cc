@@ -642,13 +642,148 @@ void ECTransaction::generate_transactions(
 	  transactions, dpp);
       }
 
+<<<<<<< HEAD
+=======
+      set<int> want;
+      for (unsigned i = 0; i < ecimpl->get_chunk_count(); ++i) {
+	want.insert(i);
+      }
+      auto to_overwrite = to_write.intersect(0, append_after);
+      ldpp_dout(dpp, 20) << "generate_transactions: to_overwrite: "
+			 << to_overwrite
+			 << dendl;
+      for (auto &&extent: to_overwrite) {
+	ldpp_dout(dpp, 0) << "BILL2: extent: " << extent.get_off() << "~" << extent.get_len() << dendl;
+	set<int> want_to_write;
+	if (sinfo.supports_ec_optimizations()) {
+	  // Only write shards that are modified
+	  const extent_set &to_write_plan = plan.will_write[oid];
+	  ldpp_dout(dpp, 0) << "BILL2: twp: " << to_write_plan << dendl;
+	  auto &&write_range = to_write_plan.lower_bound(extent.get_off());
+	  while (write_range != to_write_plan.end()) {
+	    auto start = std::max(write_range.get_start(), extent.get_off());
+	    auto end = std::min(write_range.get_end(), extent.get_off() + extent.get_len());
+	    if (start < end) {
+	      auto len = end - start;
+	      ldpp_dout(dpp, 0) << "BILL2: wr: " << start << "~" << len << dendl;
+	      get_min_want_to_write_shards(ecimpl,
+					   sinfo,
+					   start,
+					   len,
+					   &want_to_write);
+	      write_range++;
+	    } else {
+	      break;
+	    }
+	  }
+	} else {
+	  // Old code always writes all shards even if there are no changes
+	  for (unsigned i = 0;i < ecimpl->get_chunk_count(); ++i) {
+	    want_to_write.insert(i);
+	  }
+	}
+	ldpp_dout(dpp, 0) << "BILL2: w2w: " << want_to_write << dendl;
+
+	ceph_assert(extent.get_off() + extent.get_len() <= append_after);
+	ceph_assert(sinfo.logical_offset_is_stripe_aligned(extent.get_off()));
+	ceph_assert(sinfo.logical_offset_is_stripe_aligned(extent.get_len()));
+	if (entry) {
+	  uint64_t restore_from = sinfo.aligned_logical_offset_to_chunk_offset(
+	    extent.get_off());
+	  uint64_t restore_len = sinfo.aligned_logical_offset_to_chunk_offset(
+	    extent.get_len());
+	  ldpp_dout(dpp, 20) << "generate_transactions: overwriting "
+			     << restore_from << "~" << restore_len
+			     << dendl;
+	  rollback_extents.emplace_back(make_pair(restore_from, restore_len));
+	  for (auto &&st : *transactions) {
+	    if (want_to_write.contains(st.first)) {
+	      if (!entry->written_shards.contains(st.first)) {
+		// First write to this shard
+		entry->written_shards.insert(st.first);
+		st.second.touch(
+		  coll_t(spg_t(pgid, st.first)),
+		  ghobject_t(oid, entry->version.version, st.first));
+	      }
+	      st.second.clone_range(
+	        coll_t(spg_t(pgid, st.first)),
+	        ghobject_t(oid, ghobject_t::NO_GEN, st.first),
+	        ghobject_t(oid, entry->version.version, st.first),
+	        restore_from,
+	        restore_len,
+	        restore_from);
+	    } else {
+	      ldpp_dout(dpp, 0) << "BILL2: rollback clone skipping shard " << st.first << dendl;
+	    }
+	  }
+	}
+	encode_and_write(
+	  pgid,
+	  oid,
+	  sinfo,
+	  ecimpl,
+	  want_to_write,
+	  extent.get_off(),
+	  extent.get_val(),
+	  fadvise_flags,
+	  hinfo,
+	  written,
+	  write_plan_validation,
+	  transactions,
+	  dpp);
+      }
+
+      auto to_append = to_write.intersect(
+	append_after,
+	std::numeric_limits<uint64_t>::max() - append_after);
+      ldpp_dout(dpp, 20) << "generate_transactions: to_append: "
+			 << to_append
+			 << dendl;
+      for (auto &&extent: to_append) {
+	ceph_assert(sinfo.logical_offset_is_stripe_aligned(extent.get_off()));
+	ceph_assert(sinfo.logical_offset_is_stripe_aligned(extent.get_len()));
+	ldpp_dout(dpp, 20) << "generate_transactions: appending "
+			   << extent.get_off() << "~" << extent.get_len()
+			   << dendl;
+	encode_and_write(
+	  pgid,
+	  oid,
+	  sinfo,
+	  ecimpl,
+	  want,
+	  extent.get_off(),
+	  extent.get_val(),
+	  fadvise_flags,
+	  hinfo,
+	  written,
+	  write_plan_validation,
+	  transactions,
+	  dpp);
+      }
+
+      ldpp_dout(dpp, 20) << "generate_transactions: " << oid
+			 << " resetting hinfo to logical size "
+			 << new_size
+			 << dendl;
+>>>>>>> f97519c0b5f (osd: Add supports_xxx interface to ECUtil)
       if (!rollback_extents.empty() && entry) {
 	if (entry) {
 	  entry->mod_desc.rollback_extents(entry->version.version, rollback_extents);
 	}
+<<<<<<< HEAD
         if (plan.hinfo)
 	  plan.hinfo->set_total_chunk_size_clear_hash(
 	    sinfo.logical_to_next_stripe_offset(plan.projected_size));
+=======
+	if (entry->written_shards.size() == ecimpl->get_chunk_count()) {
+	  // More efficient to encode an empty set to mean all shards
+	  entry->written_shards.clear();
+	}
+	hinfo->set_total_chunk_size_clear_hash(
+	  sinfo.aligned_logical_offset_to_chunk_offset(new_size));
+      } else {
+	ceph_assert(hinfo->get_total_logical_size(sinfo) == new_size);
+>>>>>>> f97519c0b5f (osd: Add supports_xxx interface to ECUtil)
       }
 
       if (entry && plan.orig_size < plan.projected_size) {

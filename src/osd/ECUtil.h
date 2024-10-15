@@ -23,11 +23,15 @@
 #include "include/ceph_assert.h"
 #include "include/encoding.h"
 #include "common/Formatter.h"
+<<<<<<< HEAD
 #include "ExtentCache.h"
 
 // Setting to 1 turns on very large amounts of level 0 debug containing the
 // contents of buffers. Even on level 20 this is not really wanted.
 #define DEBUG_EC_BUFFERS 1
+=======
+#include "osd_types.h"
+>>>>>>> f97519c0b5f (osd: Add supports_xxx interface to ECUtil)
 
 namespace ECUtil {
   class shard_extent_map_t;
@@ -36,7 +40,9 @@ namespace ECUtil {
   friend class shard_extent_map_t;
 
   const uint64_t stripe_width;
+  const uint64_t plugin_flags;
   const uint64_t chunk_size;
+<<<<<<< HEAD
   const int k; // Can be calculated with a division from above. Better to cache.
   const int m;
   const std::vector<int> chunk_mapping;
@@ -91,6 +97,35 @@ public:
     if (shard == offset_shard) return full_stripes + ro_offset % chunk_size;
     if (shard < offset_shard) return full_stripes + chunk_size;
     return full_stripes;
+=======
+  const pg_pool_t *pool;
+public:
+  stripe_info_t( ErasureCodeInterfaceRef ec_impl, const pg_pool_t *pool, uint64_t stripe_width)
+    : stripe_width(stripe_width),
+      plugin_flags(ec_impl->get_supported_optimizations()),
+      chunk_size(stripe_width / ec_impl->get_data_chunk_count()),
+      pool(pool) {
+    ceph_assert(stripe_width % ec_impl->get_data_chunk_count() == 0);
+  }
+  stripe_info_t( uint64_t stripe_size, uint64_t stripe_width)
+    : stripe_width(stripe_width),
+      plugin_flags(0),
+      chunk_size(stripe_width / stripe_size),
+      pool(nullptr) {
+    ceph_assert(stripe_width % stripe_size == 0);
+>>>>>>> f97519c0b5f (osd: Add supports_xxx interface to ECUtil)
+  }
+  bool supports_ec_optimizations() const {
+    return pool->allows_ecoptimizations();
+  }
+  bool supports_ec_overwrites() const {
+    return pool->allows_ecoverwrites();
+  }
+  bool supports_partial_reads() const {
+    return (plugin_flags & ErasureCodeInterface::FLAG_EC_PLUGIN_PARTIAL_READ_OPTIMIZATION) != 0;
+  }
+  bool supports_partial_writes() const {
+    return (plugin_flags & ErasureCodeInterface::FLAG_EC_PLUGIN_PARTIAL_WRITE_OPTIMIZATION) != 0;
   }
   bool logical_offset_is_stripe_aligned(uint64_t logical) const {
     return (logical % stripe_width) == 0;
