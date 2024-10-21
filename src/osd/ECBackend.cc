@@ -1385,13 +1385,13 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
   PGTransactionUPtr t;
 
   void generate_transactions(
-      ceph::ErasureCodeInterfaceRef &ecimpl,
-      pg_t pgid,
-      const ECUtil::stripe_info_t &sinfo,
-      std::map<hobject_t,extent_map> *written,
-      std::map<shard_id_t, ObjectStore::Transaction> *transactions,
-      DoutPrefixProvider *dpp,
-      const ceph_release_t require_osd_release) final
+    ceph::ErasureCodeInterfaceRef &ecimpl,
+    pg_t pgid,
+    const ECUtil::stripe_info_t &sinfo,
+    map<hobject_t, shard_extent_map_t>* written,
+    std::map<shard_id_t, ObjectStore::Transaction> *transactions,
+    DoutPrefixProvider *dpp,
+    const ceph_release_t require_osd_release) final
   {
     assert(t);
     ECTransaction::generate_transactions(
@@ -1582,8 +1582,9 @@ void ECBackend::objects_read_async(
       auto dpp = ec->get_parent()->get_dpp();
       ldpp_dout(dpp, 20) << "objects_read_async_cb: got: " << results
 			 << dendl;
-      ldpp_dout(dpp, 20) << "objects_read_async_cb: cache: " << ec->rmw_pipeline.cache
-			 << dendl;
+      // FIXME
+    //   ldpp_dout(dpp, 20) << "objects_read_async_cb: cache: " << ec->rmw_pipeline.extent_cache
+			 // << dendl;
 
       auto &got = results.at(hoid);
 
@@ -1820,3 +1821,4 @@ int ECBackend::be_deep_scrub(
   o.omap_digest_present = true;
   return 0;
 }
+

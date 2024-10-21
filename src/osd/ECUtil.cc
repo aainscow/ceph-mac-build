@@ -317,26 +317,29 @@ namespace ECUtil {
 
   shard_extent_map_t shard_extent_map_t::intersect_ro_range(uint64_t ro_offset,
     uint64_t ro_length) const
-  {
-    // Optimise (common) use case where the overlap is everything
+  {    // Optimise (common) use case where the overlap is everything
     if (ro_offset <= ro_start &&
         ro_offset + ro_length >= ro_end) {
       return *this;
     }
 
-    shard_extent_map_t out(sinfo);
-
     // Optimise (common) use cases where the overlap is nothing
     if (ro_offset >= ro_end ||
         ro_offset + ro_length <= ro_start) {
-      return out;
+      return shard_extent_map_t(sinfo);
     }
 
-    // Some splitting is required - but this should be rare (growing/truncating)
     std::map<int, extent_set> ro_to_intersect;
     sinfo->ro_range_to_shard_extent_set(ro_offset, ro_length, ro_to_intersect);
 
-    for (auto && [shard, eset] : ro_to_intersect) {
+    return intersect(ro_to_intersect);
+  }
+
+  shard_extent_map_t shard_extent_map_t::intersect(map<int, extent_set> const &other) const
+  {
+    shard_extent_map_t out(sinfo);
+
+    for (auto && [shard, eset] : other) {
       if (extent_maps.contains(shard)) {
         extent_map tmp = extent_maps.at(shard).intersect(eset.range_start(), eset.size());
         if (!tmp.empty()) {
@@ -352,6 +355,18 @@ namespace ECUtil {
 
     return out;
   }
+
+  void shard_extent_map_t::insert(shard_extent_map_t const &other)
+  {
+    for (auto && [shard, eset] : other.extent_maps)
+    {
+      extent_maps[shard].insert(eset);
+    }
+
+    ro_start = min(ro_start, other.ro_start);
+    ro_end = max(ro_end, other.ro_end);
+  }
+
 
   /* Insert a buffer for a particular shard.
    * NOTE: DO NOT CALL sinfo->get_min_want_shards()
@@ -649,7 +664,7 @@ namespace ECUtil {
     return bl;
   }
 
-  std::string shard_extent_map_t::debug_string(uint64_t interval, uint64_t offset)
+  std::string shard_extent_map_t::debug_string(uint64_t interval, uint64_t offset) const
   {
     std::stringstream str;
     str << "shard_extent_map_t: " << *this << " bufs: [";
@@ -675,6 +690,31 @@ namespace ECUtil {
     }
     str << "]";
     return str.str();
+  }
+
+  void shard_extent_map_t::erase_stripe(uint64_t offset, uint64_t length)
+  {
+    for ( auto &&[shard, emap]: extent_maps) {
+      emap.erase(offset, length);
+      if (emap.empty()) {
+        extent_maps.erase(shard);
+      }
+    }
+    compute_ro_range();
+  }
+
+  bool shard_extent_map_t::contains(map<int, extent_set> const &other) const
+  {
+    for ( auto &&[shard, other_eset]: other)
+    {
+      if (!extent_maps.contains(shard))
+        return false;
+
+      extent_set eset = extent_maps.at(shard).get_interval_set();
+      if (!eset.contains(other_eset)) return false;
+    }
+
+    return true;
   }
 }
 

@@ -817,25 +817,26 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
   waiting_commit.push_back(*op);
 
   dout(10) << __func__ << ": starting commit on " << *op << dendl;
-  dout(20) << __func__ << ": " << cache << dendl;
+  //FIXME: Update dout(20) << __func__ << ": " << extent_cache << dendl;
 
   get_parent()->apply_stats(
     op->hoid,
     op->delta_stats);
 
-  if (op->using_cache) {
-    for (auto && [oid, to_read] : op->pending_read) {
-      extent_map cache_emap = cache.get_remaining_extents_for_rmw(
-          oid,
-          op->pin,
-          to_read);
-      op->remote_shard_extent_map.emplace(oid, &sinfo);
-      op->remote_shard_extent_map.at(oid).insert_ro_extent_map(cache_emap);
-    }
-    op->pending_read.clear();
-  } else {
-    ceph_assert(op->pending_read.empty());
-  }
+  // FIXME: Delete
+  // if (op->using_cache) {
+  //   for (auto && [oid, to_read] : op->pending_read) {
+  //     extent_map cache_emap = extent_cache.get_remaining_extents_for_rmw(
+  //         oid,
+  //         op->pin,
+  //         to_read);
+  //     op->remote_shard_extent_map.emplace(oid, &sinfo);
+  //     op->remote_shard_extent_map.at(oid).insert_ro_extent_map(cache_emap);
+  //   }
+  //   op->pending_read.clear();
+  // } else {
+  //   ceph_assert(op->pending_read.empty());
+  // }
 
   map<shard_id_t, ObjectStore::Transaction> trans;
   for (set<pg_shard_t>::const_iterator i =
@@ -847,7 +848,7 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
 
   op->trace.event("start ec write");
 
-  map<hobject_t,extent_map> written;
+  map<hobject_t, shard_extent_map_t> written;
   op->generate_transactions(
     ec_impl,
     get_parent()->get_info().pgid.pgid,
@@ -857,7 +858,7 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
     get_parent()->get_dpp(),
     get_osdmap()->require_osd_release);
 
-  dout(20) << __func__ << ": " << cache << dendl;
+  //FIXME dout(20) << __func__ << ": " << cache << dendl;
   dout(20) << __func__ << ": written: " << written << dendl;
   dout(20) << __func__ << ": op: " << *op << dendl;
 
@@ -873,7 +874,7 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
   if (op->using_cache) {
     for (auto && [oid, extents] : written) {
       dout(20) << __func__ << ": " << oid << " " << extents << dendl;
-      cache.present_rmw_update(oid, op->pin, extents);
+      extent_cache.update(oid, extents);
     }
   }
   op->remote_read.clear();
@@ -964,13 +965,13 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
 
 struct ECDummyOp : ECCommon::RMWPipeline::Op {
   void generate_transactions(
-      ceph::ErasureCodeInterfaceRef &ecimpl,
-      pg_t pgid,
-      const ECUtil::stripe_info_t &sinfo,
-      std::map<hobject_t,extent_map> *written,
-      std::map<shard_id_t, ObjectStore::Transaction> *transactions,
-      DoutPrefixProvider *dpp,
-      const ceph_release_t require_osd_release) final
+    ceph::ErasureCodeInterfaceRef &ecimpl,
+    pg_t pgid,
+    const ECUtil::stripe_info_t &sinfo,
+    map<hobject_t, shard_extent_map_t>* written,
+    std::map<shard_id_t, ObjectStore::Transaction> *transactions,
+    DoutPrefixProvider *dpp,
+    const ceph_release_t require_osd_release) final
   {
     // NOP, as -- in constrast to ECClassicalOp -- there is no
     // transaction involved
@@ -987,7 +988,7 @@ bool ECCommon::RMWPipeline::try_finish_rmw()
   waiting_commit.pop_front();
 
   dout(10) << __func__ << ": " << *op << dendl;
-  dout(20) << __func__ << ": " << cache << dendl;
+  //FIXME dout(20) << __func__ << ": " << cache << dendl;
 
   if (op->roll_forward_to > completed_to)
     completed_to = op->roll_forward_to;
@@ -1012,7 +1013,7 @@ bool ECCommon::RMWPipeline::try_finish_rmw()
   }
 
   if (op->using_cache) {
-    cache.release_write_pin(op->pin);
+    extent_cache.complete(op->pin);
   }
   tid_to_op_map.erase(op->tid);
 
@@ -1044,7 +1045,7 @@ void ECCommon::RMWPipeline::on_change()
   waiting_state.clear();
   waiting_commit.clear();
   for (auto &&op: tid_to_op_map) {
-    cache.release_write_pin(op.second->pin);
+    extent_cache.complete(op.second->pin);
   }
   tid_to_op_map.clear();
 }

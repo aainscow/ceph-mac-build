@@ -20,6 +20,7 @@ set(osd_srcs
   ECCommon.cc
   ECBackend.cc
   ECTransaction.cc
+  ECExtentCache.cc
   PGBackend.cc
   OSDCap.cc
   scrubber/pg_scrubber.cc

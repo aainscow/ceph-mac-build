@@ -23,8 +23,7 @@
 #include "PGBackend.h"
 #include "erasure-code/ErasureCodeInterface.h"
 #include "ECUtil.h"
-#include "ECTransaction.h"
-#include "ExtentCache.h"
+#include "ECExtentCache.h"
 
 //forward declaration
 struct ECSubWrite;
@@ -35,6 +34,7 @@ struct ECSubReadReply;
 struct RecoveryMessages;
 
 class ECBackend : public PGBackend, public ECCommon {
+
 public:
   RecoveryHandle *open_recovery_op() override;
 

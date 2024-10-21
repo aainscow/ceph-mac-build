@@ -246,7 +246,7 @@ void ECTransaction::generate_transactions(
   const ECUtil::stripe_info_t &sinfo,
   const map<hobject_t, ECUtil::shard_extent_map_t> &partial_extents,
   vector<pg_log_entry_t> &entries,
-  map<hobject_t, extent_map> *written_map,
+  map<hobject_t, ECUtil::shard_extent_map_t>* written_map,
   map<shard_id_t, ObjectStore::Transaction> *transactions,
   set<hobject_t> *temp_added,
   set<hobject_t> *temp_removed,

@@ -142,9 +142,6 @@ public:
     return chunk_mapping;
   }
   int get_shard(int raw_shard) const {
-    if ((int)chunk_mapping.size() < raw_shard)
-      return raw_shard;
-
     return chunk_mapping[raw_shard];
   }
   int get_raw_shard(int shard) const
@@ -447,9 +444,11 @@ public:
 
   void erase_after_ro_offset(uint64_t ro_offset);
   shard_extent_map_t intersect_ro_range(uint64_t ro_offset, uint64_t ro_length) const;
+  shard_extent_map_t intersect(std::map<int, extent_set> const &other) const;
   void insert_in_shard(int shard, uint64_t off, buffer::list &bl);
   void insert_in_shard(int shard, uint64_t off, buffer::list &bl, uint64_t new_start, uint64_t new_end);
   void insert_ro_zero_buffer( uint64_t ro_offset, uint64_t ro_length );
+  void insert(shard_extent_map_t const &other);
   void append_zeros_to_ro_offset( uint64_t ro_offset );
   void insert_ro_extent_map(const extent_map &host_extent_map);
   extent_set get_extent_superset() const;
@@ -461,7 +460,9 @@ public:
   void insert_parity_buffers();
   void erase_shard(int shard);
   std::map<int, bufferlist> slice(int offset, int length);
-  std::string debug_string(uint64_t inteval, uint64_t offset);
+  std::string debug_string(uint64_t inteval, uint64_t offset) const;
+  void erase_stripe(uint64_t offset, uint64_t length);
+  bool contains(std::map<int, extent_set> const &other) const;
 
   void assert_buffer_contents_equal(shard_extent_map_t other) const
   {

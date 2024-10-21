@@ -21,8 +21,9 @@
 #include "common/sharedptr_registry.hpp"
 #include "erasure-code/ErasureCodeInterface.h"
 #include "ECUtil.h"
+#include "ECExtentCache.h"
+
 #if WITH_SEASTAR
-#include "ExtentCache.h"
 #include "crimson/osd/object_context.h"
 #include "os/Transaction.h"
 #include "osd/OSDMap.h"
@@ -45,7 +46,6 @@ typedef crimson::osd::ObjectContextRef ObjectContextRef;
 #endif
 
 #include "ECTransaction.h"
-#include "ExtentCache.h"
 
 //forward declaration
 struct ECSubWrite;
@@ -524,8 +524,9 @@ struct ECCommon {
    * on the writing std::list.
    */
 
-  struct RMWPipeline {
-    struct Op : boost::intrusive::list_base_hook<> {
+  struct RMWPipeline : ECExtentCache::BackendRead {
+    struct Op : boost::intrusive::list_base_hook<>, ECExtentCache::ReadComplete
+    {
       /// From submit_transaction caller, describes operation
       hobject_t hoid;
       object_stat_sum_t delta_stats;
@@ -578,7 +579,9 @@ struct ECCommon {
       OpRequestRef client_op;
 
       /// pin for cache
-      ExtentCache::write_pin pin;
+      ECExtentCache::Read pin;
+
+      Op() : tid(), pin(*this) {}
 
       /// Callbacks
       Context *on_all_commit = nullptr;
@@ -589,17 +592,21 @@ struct ECCommon {
       virtual void generate_transactions(
         ceph::ErasureCodeInterfaceRef &ecimpl,
         pg_t pgid,
-        const ECUtil::stripe_info_t &sinfo,
-        std::map<hobject_t,extent_map> *written,
+        const stripe_info_t &sinfo,
+        map<hobject_t, shard_extent_map_t>* written,
         std::map<shard_id_t, ceph::os::Transaction> *transactions,
         DoutPrefixProvider *dpp,
         const ceph_release_t require_osd_release = ceph_release_t::unknown) = 0;
+
+      void execute(ECExtentCache::Read read) override {}
     };
+
+    void execute(hobject_t oid, map<int, extent_set> const &request) override;
+
     using OpRef = std::unique_ptr<Op>;
     using op_list = boost::intrusive::list<Op>;
     friend std::ostream &operator<<(std::ostream &lhs, const Op &rhs);
 
-    ExtentCache cache;
     std::map<ceph_tid_t, OpRef> tid_to_op_map; /// Owns Op structure
     /**
      * We model the possible rmw states as a std::set of waitlists.
@@ -687,6 +694,7 @@ struct ECCommon {
     const ECUtil::stripe_info_t& sinfo;
     ECListener* parent;
     ECCommon& ec_backend;
+    ECExtentCache::Thread extent_cache;
 
     RMWPipeline(CephContext* cct,
                 ceph::ErasureCodeInterfaceRef ec_impl,
@@ -697,7 +705,9 @@ struct ECCommon {
         ec_impl(std::move(ec_impl)),
         sinfo(sinfo),
         parent(parent),
-        ec_backend(ec_backend) {
+        ec_backend(ec_backend),
+        extent_cache(*this)
+    {
     }
   };
 
