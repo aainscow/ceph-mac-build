@@ -601,7 +601,7 @@ struct ECCommon {
       void execute(ECExtentCache::Read read) override {}
     };
 
-    void execute(hobject_t oid, map<int, extent_set> const &request) override;
+    void execute(hobject_t oid, map<int, extent_set> const &request) override {}
 
     using OpRef = std::unique_ptr<Op>;
     using op_list = boost::intrusive::list<Op>;

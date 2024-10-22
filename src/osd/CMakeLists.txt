@@ -38,7 +38,6 @@ set(osd_srcs
   SnapMapper.cc
   osd_types.cc
   ECUtil.cc
-  ExtentCache.cc
   scheduler/OpScheduler.cc
   scheduler/OpSchedulerItem.cc
   scheduler/mClockScheduler.cc

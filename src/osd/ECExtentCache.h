@@ -40,7 +40,7 @@ namespace ECExtentCache {
   {
     std::size_t operator()(const Address& a) const
     {
-      return (()std::size_t)a.oid.get_hash()) ^ std::hash<uint64_t>(a.offset);
+      return ((std::size_t)a.oid.get_hash()) ^ std::hash<uint64_t>{}(a.offset);
     }
   };
 
@@ -66,7 +66,7 @@ namespace ECExtentCache {
 
   struct BackendRead {
     virtual void execute(hobject_t oid, map<int, extent_set> const &request) = 0;
-    virtual ~BackendRead() {}
+    virtual ~BackendRead() = default;
   };
 
   class Thread {
@@ -96,7 +96,7 @@ namespace ECExtentCache {
   struct ReadComplete {
     virtual void execute(Read read) = 0;
 
-    virtual ~ReadComplete() {}
+    virtual ~ReadComplete() = default;
   };
 
   template<typename T>

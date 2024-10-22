@@ -18,7 +18,6 @@
 #include <ostream>
 
 #include "ECUtil.h"
-#include "ExtentCache.h"
 #include "erasure-code/ErasureCodeInterface.h"
 #include "os/Transaction.h"
 #include "PGTransaction.h"

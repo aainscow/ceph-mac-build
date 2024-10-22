@@ -5,7 +5,6 @@
 #include "global/global_context.h"
 #include "include/encoding.h"
 #include "ECUtil.h"
-#include "ExtentCache.h"
 
 using namespace std;
 using ceph::bufferlist;

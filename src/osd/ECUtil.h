@@ -22,9 +22,33 @@
 #include "include/buffer_fwd.h"
 #include "include/ceph_assert.h"
 #include "include/encoding.h"
+#include "common/interval_map.h"
 #include "common/Formatter.h"
 #include "osd_types.h"
-#include "ExtentCache.h"
+
+/// If someone wants these types, but not ExtentCache, move to another file
+struct bl_split_merge {
+  ceph::buffer::list split(
+    uint64_t offset,
+    uint64_t length,
+    ceph::buffer::list &bl) const {
+    ceph::buffer::list out;
+    out.substr_of(bl, offset, length);
+    return out;
+  }
+  bool can_merge(const ceph::buffer::list &left, const ceph::buffer::list &right) const {
+    return true;
+  }
+  ceph::buffer::list merge(ceph::buffer::list &&left, ceph::buffer::list &&right) const {
+    ceph::buffer::list bl{std::move(left)};
+    bl.claim_append(right);
+    return bl;
+  }
+  uint64_t length(const ceph::buffer::list &b) const { return b.length(); }
+};
+
+using extent_set = interval_set<uint64_t>;
+using extent_map = interval_map<uint64_t, ceph::buffer::list, bl_split_merge>;
 
 // Setting to 1 turns on very large amounts of level 0 debug containing the
 // contents of buffers. Even on level 20 this is not really wanted.
