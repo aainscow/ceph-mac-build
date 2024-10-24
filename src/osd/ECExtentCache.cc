@@ -3,6 +3,9 @@
 //
 
 #include "ECExtentCache.h"
+
+#include <rgw/driver/rados/group.h>
+
 #include "ECUtil.h"
 
 using namespace std;
@@ -10,111 +13,132 @@ using namespace ECUtil;
 
 namespace ECExtentCache {
 
-  static const uint64_t line_size = 0x1000;
-  static const uint64_t pin_mask = line_size - 1;
-
-  void Object::free(Line l)
+  uint64_t Object::free(Line &l)
   {
-    cache.erase_stripe(l.address.offset, line_size);
+    uint64_t old_size = cache.size();
+    cache.erase_stripe(l.address.offset, sinfo->get_chunk_size());
 
-    if (cache.empty())
+    if (cache.empty()) {
+      lru.objects.erase(oid);
+    }
+
+    return old_size - cache.size();
+  }
+
+  void Object::cache_maybe_ready()
+  {
+    if (waiting_ops.empty())
+      return;
+
+    OpRef op = waiting_ops.front();
+    if (cache.contains(op->reads))
     {
-      thread.objects.erase(oid);
+      op->result = cache.intersect(op->reads);
+      op->complete = true;
+      op->cache_ready.cache_ready(op->oid, *op->result);
     }
   }
 
-  void Object::request(Read &read)
+  void Object::request(OpRef &op)
   {
-    if (cache.contains(read.request)) {
-      read.backend_complete(cache.intersect(read.request));
-      return;
-    }
-
-    map<int, extent_set> _request = read.request;
-    bool request_empty = true;
     /* else add to read */
-    for (auto &&[shard, eset]: _request) {
-      eset.subtract(reading[shard]);
-      if (!eset.empty()) {
-        request_empty = false;
-        requesting[shard].insert(eset);
+    if (op->reads) {
+      for (auto &&[shard, eset]: *(op->reads)) {
+        extent_set request = eset;
+        if (cache.contains(shard)) request.subtract(cache.get_extent_map(shard).get_interval_set());
+        if (reading.contains(shard)) request.subtract(reading.at(shard));
+        if (writing.contains(shard)) request.subtract(writing.at(shard));
+
+        // Store the set of writes we are doing in this IO after subtracting the previous set.
+        // We require that the overlapping reads and writes in the requested IO are either read
+        // or were written by a previous IO.
+        if (op->writes.contains(shard)) writing[shard].insert(op->writes.at(shard));
+        if (!request.empty()) {
+          requesting[shard].insert(request);
+        }
       }
     }
 
-    if(request_empty)
-    {
-      reading_reads.push_back(read);
-    } else {
-      requesting_reads.push_back(read);
-    }
+    // Record the writes that will be made by this IO. Future IOs will not need to read this.
+
+    waiting_ops.emplace_back(op);
+
+    cache_maybe_ready();
+    send_reads();
   }
 
   void Object::send_reads()
   {
-    if (!reading.empty())
+    if (!reading.empty() || requesting.empty())
       return; // Read busy
 
     reading.swap(requesting);
-    reading_reads.swap(requesting_reads);
-    map<hobject_t, map<int, extent_set>> to_read;
-    to_read[oid] = requesting;
-    thread.backend_read.execute(oid, reading);
+    lru.backend_read.backend_read(oid, reading);
   }
 
-  void Object::read_done(shard_extent_map_t buffers)
+  uint64_t Object::read_done(shard_extent_map_t const &buffers)
   {
-    cache.insert(buffers);
     reading.clear();
-
-    for (auto &&read: reading_reads)
-    {
-      read.backend_complete(cache.intersect(read.request));
-    }
-    reading_reads.clear();
-
+    uint64_t size_change = insert(buffers);
     send_reads();
+    return size_change;
   }
 
-  void Read::backend_complete(shard_extent_map_t &&_result)
+  uint64_t Object::write_done(OpRef &op, shard_extent_map_t const &buffers)
   {
-    result = _result;
-    // FIXME: Complete back to ECCommon.
+    ceph_assert(op == waiting_ops.front());
+    waiting_ops.pop_front();
+    uint64_t size_change = insert(buffers);
+    return size_change;
   }
 
-  void Thread::complete(Read read)
+  uint64_t Object::insert(shard_extent_map_t const &buffers)
   {
-    for (auto &&[shard, eset]: read.request) {
-      for (auto &&[start, len]: eset ) {
-        for (uint64_t to_pin = start & ~pin_mask;
-            to_pin < start + len;
-            to_pin++) {
-          Line l = lines.at(Address(read.oid, to_pin));
-          if (!--l.ref_count) {
-            l.in_lru = true;
-            lru.emplace_back(l);
-          }
-        }
+    uint64_t old_size = cache.size();
+    cache.insert(buffers);
+    for (auto && [shard, emap] : buffers.get_extent_maps()) {
+      if (writing.contains(shard)) {
+        writing.at(shard).subtract(buffers.get_extent_map(shard).get_interval_set());
       }
     }
+    cache_maybe_ready();
+
+    return cache.size() - old_size;
   }
 
-  void Thread::update(hobject_t oid, shard_extent_map_t update)
+  void Lru::request(OpRef &op, hobject_t const &oid, std::optional<std::map<int, extent_set>> const &to_read, std::map<int, extent_set> const &write, stripe_info_t const *sinfo)
   {
-    objects.at(oid).cache.insert(update);
+    op->oid = oid;
+    op->reads = to_read;
+    op->writes = write;
+    if (!objects.contains(op->oid)) {
+      objects.emplace(op->oid, Object(*this, sinfo));
+    }
+    pin(op);
+    objects.at(op->oid).request(op);
   }
 
-  void Thread::pin(hobject_t oid, map<int, extent_set> const &request)
+  void Lru::read_done(hobject_t const& oid, shard_extent_map_t const&& update)
+  {
+    size += objects.at(oid).read_done(update);
+  }
+
+  void Lru::write_done(OpRef &op, shard_extent_map_t const&& update)
+  {
+    size += objects.at(op->oid).write_done(op, update);
+  }
+
+  void Lru::pin(OpRef &op)
   {
     extent_set eset;
-    for (auto &&[_, e]: request) eset.insert(e);
+    for (auto &&[_, e]: op->writes) eset.insert(e);
+    uint64_t size = objects.at(op->oid).sinfo->get_chunk_size();
 
-    for (auto &&[start, len]: eset )
-    {
-      for (uint64_t to_pin = start & ~pin_mask;
-            to_pin < start + len;
-            to_pin++) {
-        Address a(oid, to_pin);
-        Line l = lines[a];
+    eset.align(size);
+
+    for (auto &&[start, len]: eset ) {
+      for (uint64_t to_pin = start; to_pin < start + len; to_pin += size) {
+        Line &l = lines[Address(op->oid, to_pin)];
         if (l.in_lru) lru.remove(l);
         l.in_lru = false;
         l.ref_count++;
@@ -122,22 +146,43 @@ namespace ECExtentCache {
     }
   }
 
-  void Thread::batch_complete(hobject_t oid)
+  void Lru::complete(OpRef &op)
   {
-    objects.at(oid).send_reads();
+    extent_set eset;
+    for (auto &&[_, e]: op->writes) eset.insert(e);
+    uint64_t size = objects.at(op->oid).sinfo->get_chunk_size();
+    eset.align(size);
+
+    for (auto &&[start, len]: eset ) {
+      for (uint64_t to_pin = start; to_pin < start + len; to_pin += size) {
+        Line &l = lines.at(Address(op->oid, to_pin));
+        ceph_assert(l.ref_count);
+        if (!--l.ref_count) {
+          l.in_lru = true;
+          lru.emplace_back(l);
+        }
+      }
+    }
+    free_maybe();
   }
 
-  void Thread::free_maybe() {
-    while (allocated > size && !lru.empty())
+  void Lru::free_maybe() {
+    while (max_size < size && !lru.empty())
     {
-      allocated -= line_size;
       Line &l = lru.front();
-      objects.at(l.address.oid).free(l);
+      size -= objects.at(l.address.oid).free(l);
       lru.pop_front();
+      lines.erase(l.address);
     }
   }
 
-  Read::Read(ReadComplete &read_complete):
-    read_complete(read_complete) {}
+  bool Lru::idle(hobject_t &oid) const
+  {
+    return objects.contains(oid) && objects.at(oid).waiting_ops.empty();
+  }
+
+
+  Op::Op(CacheReady &read_complete):
+    cache_ready(read_complete) {}
 
 } // ECExtentCache

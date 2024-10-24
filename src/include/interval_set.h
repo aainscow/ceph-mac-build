@@ -442,8 +442,8 @@ class interval_set {
   }
   bool contains(interval_set const &other) const {
     interval_set tmp;
-    tmp.intersection_of(other);
-    return *this == other;
+    tmp.intersection_of(*this, other);
+    return tmp == other;
   }
   bool intersects(T start, T len) const {
     interval_set a;

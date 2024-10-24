@@ -456,6 +456,5 @@ public:
     return sinfo.logical_to_next_chunk_offset(logical_size);
   }
 };
-ostream &operator<<(ostream &lhs, const ECBackend::RMWPipeline::pipeline_state_t &rhs);
 
 #endif

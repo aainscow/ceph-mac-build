@@ -17,6 +17,9 @@
 #include <fmt/ostream.h>
 
 #include "ECCommon.h"
+
+#include <valarray>
+
 #include "messages/MOSDECSubOpWrite.h"
 #include "messages/MOSDECSubOpRead.h"
 #include "ECMsgTypes.h"
@@ -60,18 +63,6 @@ static ostream& _prefix(std::ostream *_dout,
   return *_dout;
 }
 static ostream& _prefix(std::ostream *_dout, struct ClientReadCompleter *read_completer);
-
-ostream &operator<<(ostream &lhs, const ECCommon::RMWPipeline::pipeline_state_t &rhs) {
-  switch (rhs.pipeline_state) {
-  case ECCommon::RMWPipeline::pipeline_state_t::CACHE_VALID:
-    return lhs << "CACHE_VALID";
-  case ECCommon::RMWPipeline::pipeline_state_t::CACHE_INVALID:
-    return lhs << "CACHE_INVALID";
-  default:
-    ceph_abort_msg("invalid pipeline state");
-  }
-  return lhs; // unreachable
-}
 
 ostream &operator<<(ostream &lhs, const ECCommon::ec_align_t &rhs)
 {
@@ -164,10 +155,7 @@ ostream &operator<<(ostream &lhs, const ECCommon::RMWPipeline::Op &rhs)
   lhs << " roll_forward_to=" << rhs.roll_forward_to
       << " temp_added=" << rhs.temp_added
       << " temp_cleared=" << rhs.temp_cleared
-      << " pending_read=" << rhs.pending_read
-      << " remote_read=" << rhs.remote_read
       << " remote_read_result=" << rhs.remote_shard_extent_map
-      << " pending_apply=" << rhs.pending_apply
       << " pending_commit=" << rhs.pending_commit
       << " plan.to_read=" << rhs.plan
       << ")";
@@ -560,7 +548,7 @@ struct ClientReadCompleter : ECCommon::ReadCompleter {
 
     for (auto &&read: req.to_read) {
       result.insert(read.offset, read.size,
-        std::move(res.buffers_read.get_ro_buffer(read.offset, read.size)));
+        res.buffers_read.get_ro_buffer(read.offset, read.size));
     }
 out:
     dout(20) << __func__ << " calling complete_object with result="
@@ -721,122 +709,21 @@ void ECCommon::RMWPipeline::start_rmw(OpRef op)
   dout(10) << __func__ << ": " << *op << dendl;
 
   ceph_assert(!tid_to_op_map.count(op->tid));
-  waiting_state.push_back(*op);
-  tid_to_op_map[op->tid] = std::move(op);
-  check_ops();
+
+  op->pending_cache_reads = op->plan.plans.size();
+  for (auto &&[oid, plan] : op->plan.plans) {
+    op->pending_cache_reads++;
+    extent_cache.request(op->cache_ops[oid], oid, plan.to_read, plan.will_write, &sinfo);
+  }
 }
 
-bool ECCommon::RMWPipeline::try_state_to_reads()
+void ECCommon::RMWPipeline::cache_ready(Op &op)
 {
-  if (waiting_state.empty())
-    return false;
-
-  Op *op = &(waiting_state.front());
-  if (/*op->requires_rmw() && */pipeline_state.cache_invalid()) {
-    ceph_assert(sinfo.supports_ec_overwrites());
-    dout(20) << __func__ << ": blocking " << *op
-	     << " because it requires an rmw and the cache is invalid "
-	     << pipeline_state
-	     << dendl;
-    return false;
-  }
-
-  /*if (!op->requires_rmw()) {
-    op->using_cache = false;
-  } else if (op->invalidates_cache())*/ {
-    dout(20) << __func__ << ": invalidating cache after this op"
-	     << dendl;
-    pipeline_state.invalidate();
-  }
-
-  waiting_state.pop_front();
-  waiting_reads.push_back(*op);
-
-  /* FIXME: Cache currently invalidated on every transaction. So pointless
-   *        doing anything here. */
-  op->using_cache = false;
-  if (op->using_cache) {
- //    cache.open_write_pin(op->pin);
- //
- //    extent_set empty;
- //    for (auto && [oid, to_write_plan] : op->plan.will_write) {
- //      auto to_read_plan_iter = op->plan.to_read.find(oid);
- //      const extent_set &to_read_plan =
- //        to_read_plan_iter == op->plan.to_read.end() ?
- //        empty :
- //        to_read_plan_iter->second;
- //
- //      extent_set to_rmw_plan;
- //      to_rmw_plan.union_of(to_write_plan, to_read_plan);
- //      dout(0) << __func__ << " BILL: wp: " << to_write_plan << " rp: "<< to_read_plan << " rmw_plan: " << to_rmw_plan << dendl;
- //      extent_set remote_read = cache.reserve_extents_for_rmw(
- //       oid,
- //       op->pin,
- //       to_rmw_plan,
- //       to_read_plan);
- //
- //      extent_set pending_read = to_read_plan;
- //      pending_read.subtract(remote_read);
- //
- //      if (!remote_read.empty()) {
- //       op->remote_read[oid] = std::move(remote_read);
- //      }
- //      if (!pending_read.empty()) {
- //       op->pending_read[oid] = std::move(pending_read);
- //      }
- //    }
-  } else for (auto &&[oid, plan] : op->plan.plans) {
-      if (plan.to_read) op->remote_read[oid] = *plan.to_read;
-  }
-
-  dout(10) << __func__ << ": " << *op << dendl;
-
-  if (!op->remote_read.empty()) {
-    ceph_assert(sinfo.supports_ec_overwrites());
-    objects_read_async_no_cache(
-      op->remote_read,
-      [op, this](ec_extents_t &&results) {
-	for (auto &&[oid, result] : results) {
-	  op->remote_shard_extent_map.emplace(oid, result.shard_extent_map);
-	}
-	check_ops();
-      });
-  }
-
-  return true;
-}
-
-bool ECCommon::RMWPipeline::try_reads_to_commit()
-{
-  if (waiting_reads.empty())
-    return false;
-  Op *op = &(waiting_reads.front());
-  if (op->read_in_progress())
-    return false;
-  waiting_reads.pop_front();
-  waiting_commit.push_back(*op);
-
-  dout(10) << __func__ << ": starting commit on " << *op << dendl;
-  //FIXME: Update dout(20) << __func__ << ": " << extent_cache << dendl;
+  waiting_commit.push_back(op);
 
   get_parent()->apply_stats(
-    op->hoid,
-    op->delta_stats);
-
-  // FIXME: Delete
-  // if (op->using_cache) {
-  //   for (auto && [oid, to_read] : op->pending_read) {
-  //     extent_map cache_emap = extent_cache.get_remaining_extents_for_rmw(
-  //         oid,
-  //         op->pin,
-  //         to_read);
-  //     op->remote_shard_extent_map.emplace(oid, &sinfo);
-  //     op->remote_shard_extent_map.at(oid).insert_ro_extent_map(cache_emap);
-  //   }
-  //   op->pending_read.clear();
-  // } else {
-  //   ceph_assert(op->pending_read.empty());
-  // }
+    op.hoid,
+    op.delta_stats);
 
   map<shard_id_t, ObjectStore::Transaction> trans;
   for (set<pg_shard_t>::const_iterator i =
@@ -846,10 +733,10 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
     trans[i->shard];
   }
 
-  op->trace.event("start ec write");
+  op.trace.event("start ec write");
 
-  map<hobject_t, shard_extent_map_t> written;
-  op->generate_transactions(
+  map<hobject_t, ECUtil::shard_extent_map_t> written;
+  op.generate_transactions(
     ec_impl,
     get_parent()->get_info().pgid.pgid,
     sinfo,
@@ -860,25 +747,19 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
 
   //FIXME dout(20) << __func__ << ": " << cache << dendl;
   dout(20) << __func__ << ": written: " << written << dendl;
-  dout(20) << __func__ << ": op: " << *op << dendl;
+  dout(20) << __func__ << ": op: " << op << dendl;
 
   if (!sinfo.supports_ec_overwrites()) {
-    for (auto &&i: op->log_entries) {
+    for (auto &&i: op.log_entries) {
       if (i.requires_kraken()) {
-	derr << __func__ << ": log entry " << i << " requires kraken"
-	     << " but overwrites are not enabled!" << dendl;
-	ceph_abort();
+        derr << __func__ << ": log entry " << i << " requires kraken"
+             << " but overwrites are not enabled!" << dendl;
+        ceph_abort();
       }
     }
   }
-  if (op->using_cache) {
-    for (auto && [oid, extents] : written) {
-      dout(20) << __func__ << ": " << oid << " " << extents << dendl;
-      extent_cache.update(oid, extents);
-    }
-  }
-  op->remote_read.clear();
-  op->remote_shard_extent_map.clear();
+
+  op.remote_shard_extent_map.clear();
 
   ObjectStore::Transaction empty;
   bool should_write_local = false;
@@ -890,12 +771,11 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
 	 get_parent()->get_acting_recovery_backfill_shards().begin();
        i != get_parent()->get_acting_recovery_backfill_shards().end();
        ++i) {
-    op->pending_apply.insert(*i);
-    op->pending_commit.insert(*i);
+    op.pending_commit.insert(*i);
     map<shard_id_t, ObjectStore::Transaction>::iterator iter =
       trans.find(i->shard);
     ceph_assert(iter != trans.end());
-    bool should_send = get_parent()->should_send_op(*i, op->hoid);
+    bool should_send = get_parent()->should_send_op(*i, op.hoid);
     const pg_stat_t &stats =
       (should_send || !backfill_shards.count(*i)) ?
       get_info().stats :
@@ -903,24 +783,24 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
 
     ECSubWrite sop(
       get_parent()->whoami_shard(),
-      op->tid,
-      op->reqid,
-      op->hoid,
+      op.tid,
+      op.reqid,
+      op.hoid,
       stats,
       should_send ? iter->second : empty,
-      op->version,
-      op->trim_to,
-      op->roll_forward_to,
-      op->log_entries,
-      op->updated_hit_set_history,
-      op->temp_added,
-      op->temp_cleared,
+      op.version,
+      op.trim_to,
+      op.roll_forward_to,
+      op.log_entries,
+      op.updated_hit_set_history,
+      op.temp_added,
+      op.temp_cleared,
       !should_send);
 
     ZTracer::Trace trace;
-    if (op->trace) {
+    if (op.trace) {
       // initialize a child span for this shard
-      trace.init("ec sub write", nullptr, &op->trace);
+      trace.init("ec sub write", nullptr, &op.trace);
       trace.keyval("shard", i->shard.id);
     }
 
@@ -928,7 +808,7 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
       should_write_local = true;
       local_write_op.claim(sop);
     } else if (cct->_conf->bluestore_debug_inject_read_err &&
-	       ec_inject_test_write_error1(ghobject_t(op->hoid,
+	       ec_inject_test_write_error1(ghobject_t(op.hoid,
 		 ghobject_t::NO_GEN, i->shard))) {
       dout(0) << " Error inject - Dropping write message to shard " <<
 	i->shard << dendl;
@@ -949,18 +829,16 @@ bool ECCommon::RMWPipeline::try_reads_to_commit()
   if (should_write_local) {
     handle_sub_write(
       get_parent()->whoami_shard(),
-      op->client_op,
+      op.client_op,
       local_write_op,
-      op->trace);
+      op.trace);
   }
 
-  for (auto i = op->on_write.begin();
-       i != op->on_write.end();
-       op->on_write.erase(i++)) {
+  for (auto i = op.on_write.begin();
+       i != op.on_write.end();
+       op.on_write.erase(i++)) {
     (*i)();
   }
-
-  return true;
 }
 
 struct ECDummyOp : ECCommon::RMWPipeline::Op {
@@ -968,70 +846,50 @@ struct ECDummyOp : ECCommon::RMWPipeline::Op {
     ceph::ErasureCodeInterfaceRef &ecimpl,
     pg_t pgid,
     const ECUtil::stripe_info_t &sinfo,
-    map<hobject_t, shard_extent_map_t>* written,
+    map<hobject_t, ECUtil::shard_extent_map_t>* written,
     std::map<shard_id_t, ObjectStore::Transaction> *transactions,
     DoutPrefixProvider *dpp,
     const ceph_release_t require_osd_release) final
   {
     // NOP, as -- in constrast to ECClassicalOp -- there is no
-    // transaction involved
+    // transaction involvedf
   }
 };
 
-bool ECCommon::RMWPipeline::try_finish_rmw()
+void ECCommon::RMWPipeline::try_finish_rmw()
 {
-  if (waiting_commit.empty())
-    return false;
-  Op *op = &(waiting_commit.front());
-  if (op->write_in_progress())
-    return false;
-  waiting_commit.pop_front();
+  for ( Op &op = waiting_commit.front();
+        !waiting_commit.empty() && op.pending_commit.empty();
+        op = waiting_commit.front())
+  {
+    waiting_commit.pop_front();
 
-  dout(10) << __func__ << ": " << *op << dendl;
-  //FIXME dout(20) << __func__ << ": " << cache << dendl;
+    if (op.roll_forward_to > completed_to)
+      completed_to = op.roll_forward_to;
+    if (op.version > committed_to)
+      committed_to = op.version;
 
-  if (op->roll_forward_to > completed_to)
-    completed_to = op->roll_forward_to;
-  if (op->version > committed_to)
-    committed_to = op->version;
-
-  if (get_osdmap()->require_osd_release >= ceph_release_t::kraken) {
-    if (op->version > get_parent()->get_log().get_can_rollback_to() &&
-	waiting_reads.empty() &&
-	waiting_commit.empty()) {
-      // submit a dummy, transaction-empty op to kick the rollforward
-      auto tid = get_parent()->get_tid();
-      auto nop = std::make_unique<ECDummyOp>();
-      nop->hoid = op->hoid;
-      nop->trim_to = op->trim_to;
-      nop->roll_forward_to = op->version;
-      nop->tid = tid;
-      nop->reqid = op->reqid;
-      waiting_reads.push_back(*nop);
-      tid_to_op_map[tid] = std::move(nop);
+    if (get_osdmap()->require_osd_release >= ceph_release_t::kraken && extent_cache.idle(op.hoid)) {
+      // FIXME: This needs to be implemented as a flushing write.
+      if (op.version > get_parent()->get_log().get_can_rollback_to()) {
+        // submit a dummy, transaction-empty op to kick the rollforward
+        auto tid = get_parent()->get_tid();
+        auto nop = std::make_unique<ECDummyOp>();
+        nop->hoid = op.hoid;
+        nop->trim_to = op.trim_to;
+        nop->roll_forward_to = op.version;
+        nop->tid = tid;
+        nop->reqid = op.reqid;
+        extent_cache.request(nop->cache_ops[op.hoid], op.hoid, std::nullopt, map<int, extent_set>(), &sinfo);
+        tid_to_op_map[tid] = std::move(nop);
+      }
     }
-  }
 
-  if (op->using_cache) {
-    extent_cache.complete(op->pin);
-  }
-  tid_to_op_map.erase(op->tid);
+    for (auto &&[_, c]: op.cache_ops)
+      extent_cache.complete(c);
 
-  if (waiting_reads.empty() &&
-      waiting_commit.empty()) {
-    pipeline_state.clear();
-    dout(20) << __func__ << ": clearing pipeline_state "
-	     << pipeline_state
-	     << dendl;
+    tid_to_op_map.erase(op.tid);
   }
-  return true;
-}
-
-void ECCommon::RMWPipeline::check_ops()
-{
-  while (try_state_to_reads() ||
-	 try_reads_to_commit() ||
-	 try_finish_rmw());
 }
 
 void ECCommon::RMWPipeline::on_change()
@@ -1040,25 +898,21 @@ void ECCommon::RMWPipeline::on_change()
 
   completed_to = eversion_t();
   committed_to = eversion_t();
-  pipeline_state.clear();
-  waiting_reads.clear();
-  waiting_state.clear();
   waiting_commit.clear();
-  for (auto &&op: tid_to_op_map) {
-    extent_cache.complete(op.second->pin);
+
+  for (auto &&[_, op]: tid_to_op_map) {
+    for (auto &&[_, cop]: op->cache_ops)
+      extent_cache.complete(cop);
   }
   tid_to_op_map.clear();
 }
 
 void ECCommon::RMWPipeline::call_write_ordered(std::function<void(void)> &&cb) {
-  if (!waiting_state.empty()) {
-    waiting_state.back().on_write.emplace_back(std::move(cb));
-  } else if (!waiting_reads.empty()) {
-    waiting_reads.back().on_write.emplace_back(std::move(cb));
-  } else {
-    // Nothing earlier in the pipeline, just call it
-    cb();
-  }
+  // FIXME: The original function waits for all pipeline writes to complete.
+  //        I think what we want to do here is to flush the cache and queue a
+  //        a write behind it.  I have no idea how critical ordered writes are.
+  ceph_abort("Ordered writes not implemented");
+  cb();
 }
 
 ECUtil::HashInfoRef ECCommon::UnstableHashInfoRegistry::maybe_put_hash_info(

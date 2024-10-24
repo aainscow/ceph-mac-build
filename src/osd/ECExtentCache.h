@@ -7,16 +7,14 @@
 
 #include "ECUtil.h"
 
-using namespace std;
-using namespace ECUtil;
-
 namespace ECExtentCache {
 
   class Address;
   class Line;
-  class Thread;
+  class Lru;
   class Object;
-  class Read;
+  class Op;
+  typedef std::shared_ptr<Op> OpRef;
 
   class Address
   {
@@ -65,88 +63,92 @@ namespace ECExtentCache {
   };
 
   struct BackendRead {
-    virtual void execute(hobject_t oid, map<int, extent_set> const &request) = 0;
+    virtual void backend_read(hobject_t oid, std::map<int, extent_set> const &request) = 0;
     virtual ~BackendRead() = default;
   };
 
-  class Thread {
-    friend class Read;
+  class Lru {
+    friend class Op;
     friend class Object;
 
     unordered_map<Address, Line, AddressHasher> lines;
-    list<Line> lru;
-    uint64_t allocated;
-    uint64_t size;
+    std::list<Line> lru;
+    uint64_t max_size = 0;
+    uint64_t size = 0;
     void free_maybe();
 
     BackendRead &backend_read;
 
+    void pin(OpRef &op);
+
   public:
-    Thread(BackendRead &backend_read) : backend_read(backend_read) {}
+    explicit Lru(BackendRead &backend_read, uint64_t max_size) :
+      max_size(max_size), backend_read(backend_read) {}
 
-    map<hobject_t, Object> objects;
+    std::map<hobject_t, Object> objects;
 
-    void pin(hobject_t oid, map<int, extent_set>  const&request);
-    void batch_complete(hobject_t oid);
-    void update(hobject_t oid, shard_extent_map_t update);
-    void complete(Read read);
-
+    // Insert some data into the cache.
+    void read_done(hobject_t const& oid, ECUtil::shard_extent_map_t const&& update);
+    void write_done(OpRef &op, ECUtil::shard_extent_map_t const&& update);
+    void complete(OpRef &read);
+    void request(OpRef &op, hobject_t const &oid, std::optional<std::map<int, extent_set>> const &to_read, std::map<int, extent_set> const &write, ECUtil::stripe_info_t const *sinfo);
+    bool idle(hobject_t &oid) const;
   };
 
-  struct ReadComplete {
-    virtual void execute(Read read) = 0;
+  struct CacheReady {
+    virtual void cache_ready(hobject_t& oid, ECUtil::shard_extent_map_t& result) = 0;
 
-    virtual ~ReadComplete() = default;
+    virtual ~CacheReady() = default;
   };
 
-  template<typename T>
-  struct read_complete : BackendRead, private T {
-    read_complete(T l) noexcept : T{l} {}
-
-    auto execute() -> int override {
-      return T::operator()();
-    }
-  };
-
-  class Read
+  class Op
   {
     friend class Object;
-    friend class Thread;
+    friend class Lru;
 
     hobject_t oid;
-    map<int, extent_set> request;
-    optional<shard_extent_map_t> result;
-
-    void backend_complete(shard_extent_map_t &&result);
-    ReadComplete &read_complete;
+    std::optional<std::map<int, extent_set>> reads;
+    std::map<int, extent_set> writes;
+    std::optional<ECUtil::shard_extent_map_t> result;
+    bool complete = false;
+    CacheReady &cache_ready;
 
   public:
-    Read(ReadComplete &read_complete);
+    explicit Op(CacheReady &cache_ready);
+
+    std::optional<ECUtil::shard_extent_map_t> get_result() { return result; }
+    std::map<int, extent_set> get_writes() { return writes; }
+
   };
 
   class Object
   {
 
-    friend class Thread;
-    friend class Read;
+    friend class Lru;
+    friend class Op;
 
-    Thread &thread;
+    Lru &lru;
     hobject_t oid;
-    map<int, extent_set> requesting;
-    map<int, extent_set> reading;
-    shard_extent_map_t cache;
-    list<Read> requesting_reads;
-    list<Read> reading_reads;
+    ECUtil::stripe_info_t const *sinfo;
+    std::map<int, extent_set> requesting;
+    std::map<int, extent_set> reading;
+    std::map<int, extent_set> writing;
+    ECUtil::shard_extent_map_t cache;
+    std::list<OpRef> waiting_ops;
 
-    void free(Line l);
-    void request(Read &read);
+
+    uint64_t free(Line &l);
+    void request(OpRef &op);
     void send_reads();
-    void read_done(shard_extent_map_t result);
+    uint64_t read_done(ECUtil::shard_extent_map_t const &result);
+    uint64_t write_done(OpRef &op, ECUtil::shard_extent_map_t const &result);
+    uint64_t insert(ECUtil::shard_extent_map_t const &buffers);
+    void cache_maybe_ready();
 
   public:
-    Object(Thread &thread, stripe_info_t *sinfo) : thread(thread), cache(sinfo) {}
+    Object(Lru &thread, ECUtil::stripe_info_t const *sinfo) : lru(thread), sinfo(sinfo), cache(sinfo) {}
 
   };
-} // ECExtentCache
+} // ECExtentCaches
 
 #endif //ECEXTENTCACHE_H

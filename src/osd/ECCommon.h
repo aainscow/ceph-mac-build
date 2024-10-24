@@ -525,7 +525,7 @@ struct ECCommon {
    */
 
   struct RMWPipeline : ECExtentCache::BackendRead {
-    struct Op : boost::intrusive::list_base_hook<>, ECExtentCache::ReadComplete
+    struct Op : boost::intrusive::list_base_hook<>, ECExtentCache::CacheReady
     {
       /// From submit_transaction caller, describes operation
       hobject_t hoid;
@@ -558,30 +558,24 @@ struct ECCommon {
       bool using_cache = true;
 
       /// In progress read state;
-      std::map<hobject_t,extent_set> pending_read; // subset already being read
-      std::map<hobject_t,std::map<int, extent_set>> remote_read;  // subset we must read
+      int pending_cache_reads = 0;
       std::map<hobject_t,ECUtil::shard_extent_map_t> remote_shard_extent_map;
-      bool read_in_progress() const {
-        return !remote_read.empty() && remote_shard_extent_map.empty();
-      }
 
       /// In progress write state.
       std::set<pg_shard_t> pending_commit;
-      // we need pending_apply for pre-mimic peers so that we don't issue a
-      // read on a remote shard before it has applied a previous write.  We can
-      // remove this after nautilus.
-      std::set<pg_shard_t> pending_apply;
+
       bool write_in_progress() const {
-        return !pending_commit.empty() || !pending_apply.empty();
+        return !pending_commit.empty();
       }
 
       /// optional, may be null, for tracking purposes
       OpRequestRef client_op;
 
       /// pin for cache
-      ECExtentCache::Read pin;
+      std::map<hobject_t, ECExtentCache::OpRef> cache_ops;
+      RMWPipeline *pipeline;
 
-      Op() : tid(), pin(*this) {}
+      Op() : tid() {}
 
       /// Callbacks
       Context *on_all_commit = nullptr;
@@ -592,73 +586,45 @@ struct ECCommon {
       virtual void generate_transactions(
         ceph::ErasureCodeInterfaceRef &ecimpl,
         pg_t pgid,
-        const stripe_info_t &sinfo,
-        map<hobject_t, shard_extent_map_t>* written,
+        const ECUtil::stripe_info_t &sinfo,
+        std::map<hobject_t, ECUtil::shard_extent_map_t>* written,
         std::map<shard_id_t, ceph::os::Transaction> *transactions,
         DoutPrefixProvider *dpp,
         const ceph_release_t require_osd_release = ceph_release_t::unknown) = 0;
 
-      void execute(ECExtentCache::Read read) override {}
+      void cache_ready(hobject_t& oid, ECUtil::shard_extent_map_t& result) override
+      {
+        remote_shard_extent_map.insert(std::pair(oid, result));
+
+        if (!--pending_cache_reads) pipeline->cache_ready(*this);
+      }
     };
 
-    void execute(hobject_t oid, map<int, extent_set> const &request) override {}
+    void backend_read(hobject_t oid, std::map<int, extent_set> const &request) override  {
+      std::map<hobject_t, std::map<int, extent_set>> to_read;
+      to_read[oid] = request;
+
+      objects_read_async_no_cache(to_read,
+        [this](ec_extents_t &&results)
+        {
+          for (auto &&[oid, result] : results) {
+            extent_cache.read_done(oid, std::move(result.shard_extent_map));
+          }
+        });
+    }
 
     using OpRef = std::unique_ptr<Op>;
     using op_list = boost::intrusive::list<Op>;
     friend std::ostream &operator<<(std::ostream &lhs, const Op &rhs);
 
     std::map<ceph_tid_t, OpRef> tid_to_op_map; /// Owns Op structure
-    /**
-     * We model the possible rmw states as a std::set of waitlists.
-     * All writes at this time complete in order, so a write blocked
-     * at waiting_state blocks all writes behind it as well (same for
-     * other states).
-     *
-     * Future work: We can break this up into a per-object pipeline
-     * (almost).  First, provide an ordering token to submit_transaction
-     * and require that all operations within a single transaction take
-     * place on a subset of hobject_t space partitioned by that token
-     * (the hashid seem about right to me -- even works for temp objects
-     * if you recall that a temp object created for object head foo will
-     * only ever be referenced by other transactions on foo and aren't
-     * reused).  Next, factor this part into a class and maintain one per
-     * ordering token.  Next, fixup PrimaryLogPG's repop queue to be
-     * partitioned by ordering token.  Finally, refactor the op pipeline
-     * so that the log entries passed into submit_transaction aren't
-     * versioned.  We can't assign versions to them until we actually
-     * submit the operation.  That's probably going to be the hard part.
-     */
-    class pipeline_state_t {
-      enum {
-        CACHE_VALID = 0,
-        CACHE_INVALID = 1
-      } pipeline_state = CACHE_VALID;
-    public:
-      bool caching_enabled() const {
-        return pipeline_state == CACHE_VALID;
-      }
-      bool cache_invalid() const {
-        return !caching_enabled();
-      }
-      void invalidate() {
-        pipeline_state = CACHE_INVALID;
-      }
-      void clear() {
-        pipeline_state = CACHE_VALID;
-      }
-      friend std::ostream &operator<<(std::ostream &lhs, const pipeline_state_t &rhs);
-    } pipeline_state;
 
-    op_list waiting_state;        /// writes waiting on pipe_state
-    op_list waiting_reads;        /// writes waiting on partial stripe reads
     op_list waiting_commit;       /// writes waiting on initial commit
     eversion_t completed_to;
     eversion_t committed_to;
     void start_rmw(OpRef op);
-    bool try_state_to_reads();
-    bool try_reads_to_commit();
-    bool try_finish_rmw();
-    void check_ops();
+    void cache_ready(Op &op);
+    void try_finish_rmw();
 
     void on_change();
     void call_write_ordered(std::function<void(void)> &&cb);
@@ -694,7 +660,7 @@ struct ECCommon {
     const ECUtil::stripe_info_t& sinfo;
     ECListener* parent;
     ECCommon& ec_backend;
-    ECExtentCache::Thread extent_cache;
+    ECExtentCache::Lru extent_cache;
 
     RMWPipeline(CephContext* cct,
                 ceph::ErasureCodeInterfaceRef ec_impl,
@@ -706,7 +672,7 @@ struct ECCommon {
         sinfo(sinfo),
         parent(parent),
         ec_backend(ec_backend),
-        extent_cache(*this)
+        extent_cache(*this, 10*1024*1024) // FIXME: Temporary cache size of 10MiB
     {
     }
   };
@@ -737,8 +703,6 @@ struct ECCommon {
 };
 
 std::ostream &operator<<(std::ostream &lhs,
-			 const ECCommon::RMWPipeline::pipeline_state_t &rhs);
-std::ostream &operator<<(std::ostream &lhs,
 			 const ECCommon::read_request_t &rhs);
 std::ostream &operator<<(std::ostream &lhs,
 			 const ECCommon::read_result_t &rhs);
@@ -747,7 +711,6 @@ std::ostream &operator<<(std::ostream &lhs,
 std::ostream &operator<<(std::ostream &lhs,
 			 const ECCommon::RMWPipeline::Op &rhs);
 
-template <> struct fmt::formatter<ECCommon::RMWPipeline::pipeline_state_t> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<ECCommon::read_request_t> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<ECCommon::read_result_t> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<ECCommon::ReadOp> : fmt::ostream_formatter {};

@@ -468,6 +468,7 @@ public:
 
   void erase_after_ro_offset(uint64_t ro_offset);
   shard_extent_map_t intersect_ro_range(uint64_t ro_offset, uint64_t ro_length) const;
+  shard_extent_map_t intersect(std::optional<std::map<int, extent_set>> const &other) const;
   shard_extent_map_t intersect(std::map<int, extent_set> const &other) const;
   void insert_in_shard(int shard, uint64_t off, buffer::list &bl);
   void insert_in_shard(int shard, uint64_t off, buffer::list &bl, uint64_t new_start, uint64_t new_end);
@@ -478,7 +479,7 @@ public:
   extent_set get_extent_superset() const;
   int encode(ErasureCodeInterfaceRef& ecimpl, const HashInfoRef &hinfo, uint64_t before_ro_size);
   void decode(ErasureCodeInterfaceRef& ecimpl, std::map<int, extent_set> want);
-  void get_buffer(int shard, uint64_t offset, uint64_t length, buffer::list &append_to, bool zero_pad);
+  void get_buffer(int shard, uint64_t offset, uint64_t length, buffer::list &append_to, bool zero_pad) const;
   bufferlist get_ro_buffer(uint64_t ro_offset, uint64_t ro_length);
   std::map <int, extent_set> get_extent_set_map();
   void insert_parity_buffers();
@@ -486,7 +487,10 @@ public:
   std::map<int, bufferlist> slice(int offset, int length);
   std::string debug_string(uint64_t inteval, uint64_t offset) const;
   void erase_stripe(uint64_t offset, uint64_t length);
+  bool contains(int shard) const;
+  bool contains(std::optional<std::map<int, extent_set>> const &other) const;
   bool contains(std::map<int, extent_set> const &other) const;
+  uint64_t size();
 
   void assert_buffer_contents_equal(shard_extent_map_t other) const
   {
@@ -501,6 +505,13 @@ public:
   }
 
   friend std::ostream& operator<<(std::ostream& lhs, const shard_extent_map_t& rhs);
+  friend bool operator==(const shard_extent_map_t& lhs, const shard_extent_map_t& rhs)
+  {
+    return lhs.sinfo == rhs.sinfo
+      && lhs.ro_start == rhs.ro_start
+      && lhs.ro_end == rhs.ro_end
+      && lhs.extent_maps == rhs.extent_maps;
+  }
 };
 
 
