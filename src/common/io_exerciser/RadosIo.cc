@@ -169,7 +169,9 @@ void RadosIo::applyIoOp(IoOp& op) {
       [[fallthrough]];
     case OpType::Write3:
       [[fallthrough]];
-    case OpType::FailedWrite:
+    case OpType::Append:
+    [[ fallthrough ]];
+  case OpType::FailedWrite:
       [[fallthrough]];
     case OpType::FailedWrite2:
       [[fallthrough]];
@@ -289,6 +291,14 @@ void RadosIo::applyReadWriteOp(IoOp& op) {
       applyWriteOp(writeOp);
       break;
     }
+
+  case OpType::Append:
+  {
+    start_io();
+    SingleAppendOp& appendOp = static_cast<SingleAppendOp&>(op);
+    applyWriteOp(appendOp);
+    break;
+  }
 
     case OpType::FailedWrite: {
       start_io();
