@@ -12,6 +12,7 @@
  *
  */
 
+#pragma once
 
 #include "osd_internal_types.h"
 #include "OSDMap.h"
@@ -174,7 +175,3 @@ struct ECListener {
   virtual void op_applied(
     const eversion_t &applied_version) = 0;
 };
-
-
-#pragma once
-
