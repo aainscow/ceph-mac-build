@@ -21,12 +21,12 @@
 
 #include "PGBackend.h"
 #include "ECBackendL.h"
+#include "ECBackend.h"
 
 class ECSwitch : public PGBackend {
   friend class ECRecPred;
   friend class ECReadPred;
 
-  // Mutable because this is essentially used as a cache.
   ECLegacy::ECBackendL legacy;
   ECLegacy::ECBackendL optimized;
   bool is_optimized_actual;
