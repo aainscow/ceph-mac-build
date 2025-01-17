@@ -146,12 +146,13 @@ namespace ECLegacy {
       bool fast_read,
       GenContextURef<ECCommonL::ec_extents_t &&> &&func) override;
 
-  void objects_read_async(
-    const hobject_t &hoid,
-    const std::list<std::pair<ec_align_t,
-                              std::pair<ceph::buffer::list*, Context*>>> &to_read,
-    Context *on_complete,
-    bool fast_read = false) override;
+    void objects_read_async(
+      const hobject_t &hoid,
+      uint64_t object_size,
+      const std::list<std::pair<ec_align_t,
+                                std::pair<ceph::buffer::list*, Context*>>> &to_read,
+      Context *on_complete,
+      bool fast_read = false);
 
   private:
     friend struct ECRecoveryHandle;

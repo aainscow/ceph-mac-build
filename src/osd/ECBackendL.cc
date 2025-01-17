@@ -1569,15 +1569,15 @@ namespace ECLegacy {
     return -EOPNOTSUPP;
   }
 
-  void ECBackendL::objects_read_async(
-    const hobject_t &hoid,
-
-    const list<pair<ec_align_t,
-                    pair<bufferlist*, Context*>>> &to_read,
-    Context *on_complete,
-    bool fast_read)
-  {
-    map<hobject_t,std::list<ec_align_t>> reads;
+void ECBackendL::objects_read_async(
+  const hobject_t &hoid,
+  uint64_t object_size,
+  const list<pair<ec_align_t,
+                  pair<bufferlist*, Context*>>> &to_read,
+  Context *on_complete,
+  bool fast_read)
+{
+  map<hobject_t,std::list<ec_align_t>> reads;
 
     uint32_t flags = 0;
     extent_set es;

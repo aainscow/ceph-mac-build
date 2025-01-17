@@ -208,13 +208,15 @@ public:
     if (is_optimized()) return optimized.objects_read_sync(hoid, off, len, op_flags, bl);
     return legacy.objects_read_sync(hoid, off, len, op_flags, bl);
   }
-  void objects_read_async(const hobject_t &hoid
-    , const std::list<std::pair<ec_align_t, std::pair<ceph::buffer::
-    list *, Context *>>> &to_read, Context *on_complete
-    , bool fast_read) override
+  void objects_read_async(
+    const hobject_t &hoid,
+    uint64_t object_size,
+    const std::list<std::pair<ec_align_t,
+              std::pair<ceph::buffer::list*, Context*>>> &to_read,
+    Context *on_complete, bool fast_read = false) override
   {
-    if (is_optimized) optimized.objects_read_async(hoid, to_read, on_complete, fast_read);
-    else legacy.objects_read_async(hoid, to_read, on_complete, fast_read);
+    if (is_optimized()) optimized.objects_read_async(hoid, object_size, to_read, on_complete, fast_read);
+    else legacy.objects_read_async(hoid, object_size, to_read, on_complete, fast_read);
   }
   bool auto_repair_supported() const override
   {
